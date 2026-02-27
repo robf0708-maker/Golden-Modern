@@ -1,0 +1,47 @@
+[00:17, 08/02/2026] +55 18 99697-0602: Olá boa noite
+[00:17, 08/02/2026] +55 18 99697-0602: Olá, Buchecha! Boa noite! Como posso ajudar hoje?
+[00:17, 08/02/2026] +55 18 99697-0602: Quero marca um horário
+[00:17, 08/02/2026] +55 18 99697-0602: Perfeito, Buchecha! Qual serviço você gostaria de agendar?
+[00:17, 08/02/2026] +55 18 99697-0602: Corte
+[00:17, 08/02/2026] +55 18 99697-0602: Ótimo, Buchecha! Você tem preferência por algum profissional ou podemos agendar com o horário mais próximo disponível?
+[00:17, 08/02/2026] +55 18 99697-0602: Mais próximo
+[00:17, 08/02/2026] +55 18 99697-0602: Temos um horário disponível no dia 10 de fevereiro às 08:00 com o Robson. Posso confirmar para você?
+[00:17, 08/02/2026] +55 18 99697-0602: Teria as 9
+[00:17, 08/02/2026] +55 18 99697-0602: Infelizmente, Buchecha, o horário das 09:00 não está disponível. O próximo horário é às 08:00 no dia 10 de fevereiro. Posso confirmar esse horário com o Robson?
+[00:17, 08/02/2026] +55 18 99697-0602: As 10
+[00:17, 08/02/2026] +55 18 99697-0602: O horário das 10:00 também não está disponível, Buchecha. O próximo horário que temos é às 08:00 no dia 10 de fevereiro com o Robson. Posso confirmar esse horário para você?
+[00:17, 08/02/2026] +55 18 99697-0602: Pode sim
+[00:17, 08/02/2026] +55 18 99697-0602: Agendamento confirmado, Buchecha! Aqui estão os detalhes:
+
+* Serviço: Corte
+* Profissional: Robson
+* Data: 10/02/2026
+* Horário: 08:00
+
+Qualquer coisa, estou à disposição. Tenha um ótimo dia!
+[00:17, 08/02/2026] +55 18 99697-0602: Olá Buchecha! ✅
+
+Seu agendamento foi confirmado!
+
+📅 10/02/2026 às 08:00
+✂️ corte 
+💈 Robson
+
+Local: Estayle
+
+Nos vemos em breve!
+[00:17, 08/02/2026] +55 18 99697-0602: Quero cancelar posso e marca para dia 11
+[00:17, 08/02/2026] +55 18 99697-0602: Claro, Buchecha! Para cancelar, poderia me informar qual agendamento você deseja cancelar? Você tem um agendamento no dia 10/02 às 08:00 com Robson e outro às 08:30 com Burdog.
+[00:17, 08/02/2026] +55 18 99697-0602: As duas pode cancelar
+[00:17, 08/02/2026] +55 18 99697-0602:  Ola {nome } cancelamento ok! se precisar estamos as ordem ! 
+[00:17, 08/02/2026] +55 18 99697-0602: Agendamentos cancelados, Buchecha! Agora, vamos agendar para o dia 11. Qual serviço você gostaria de agendar?
+[00:17, 08/02/2026] +55 18 99697-0602: Vamos sim
+[00:17, 08/02/2026] +55 18 99697-0602: Olá, Buchecha! Que serviço você deseja agendar para o dia 11?
+[00:17, 08/02/2026] +55 18 99697-0602: Sim
+[00:17, 08/02/2026] +55 18 99697-0602: Parece que você quer agendar, mas preciso saber qual serviço deseja. Poderia me informar, por favor?
+[00:17, 08/02/2026] +55 18 99697-0602: Corte
+[00:17, 08/02/2026] +55 18 99697-0602: Ótimo, Buchecha! Você tem preferência por algum profissional, Robson ou Burdog?
+[00:17, 08/02/2026] +55 18 99697-0602: Burdog
+[00:17, 08/02/2026] +55 18 99697-0602: Perfeito, Buchecha! O próximo horário disponível com o Burdog é no dia 10 de fevereiro às 09:00. Posso confirmar para você?
+[00:17, 08/02/2026] +55 18 99697-0602: Dia 11 não tem
+[00:17, 08/02/2026] +55 18 99697-0602: Infelizmente, Buchecha, não temos horários disponíveis no dia 11. O próximo horário com o Burdog é no dia 10 de fevereiro às 09:00. Posso confirmar esse horário para você?

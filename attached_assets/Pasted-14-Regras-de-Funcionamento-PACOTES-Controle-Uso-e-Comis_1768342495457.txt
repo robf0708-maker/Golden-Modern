@@ -1,0 +1,184 @@
+14. Regras de Funcionamento — PACOTES (Controle, Uso e Comissão)
+14.1 Conceito de Pacote
+
+Pacote é um conjunto de serviços pré-pagos, adquiridos pelo cliente antecipadamente, com quantidade e regras definidas.
+
+Exemplos:
+
+Pacote Corte Masculino (10 usos)
+
+Pacote Barba + Cabelo (5 usos)
+
+O valor do pacote é pago no momento da compra, não no agendamento ou atendimento.
+
+14.2 Estado do Pacote do Cliente
+
+Cada cliente pode ter 0 ou mais pacotes ativos.
+
+Para cada pacote, o sistema deve controlar:
+
+Quantidade total contratada
+
+Quantidade utilizada
+
+Quantidade restante
+
+Data de compra
+
+Data de validade (se existir)
+
+Status: Ativo | Finalizado | Expirado
+
+14.3 Agendamento com Pacote
+
+Quando o cliente agenda um serviço:
+
+O sistema verifica automaticamente:
+
+Se o cliente possui pacote ativo compatível com o serviço
+
+Se possuir pacote:
+
+Exibir no agendamento:
+
+"Este cliente possui pacote ativo"
+
+Quantos usos restam no pacote
+
+O serviço pode ser marcado como:
+
+Usar pacote
+
+Avulso (caso o cliente opte por não usar o pacote)
+
+14.4 Uso do Pacote na Comanda (PDV)
+
+Ao abrir a comanda do cliente:
+
+O sistema deve exibir claramente:
+
+Pacotes ativos
+
+Quantidade restante
+
+Quando o admin ou profissional adiciona um serviço:
+
+Opção 1 — Serviço via Pacote
+
+Serviço marcado como "Usado do Pacote"
+
+Valor do serviço = R$ 0,00
+
+Debita 1 uso do pacote
+
+Gera comissão normalmente para o profissional (regra definida)
+
+Opção 2 — Serviço Avulso
+
+Serviço cobrado normalmente
+
+Não consome pacote
+
+Comissão calculada normalmente
+
+14.5 Pagamento da Comanda
+
+Serviços via pacote não entram no total a pagar
+
+Produtos e serviços avulsos entram normalmente
+
+Evita erro de cobrança duplicada
+
+Regra crítica: pacote nunca gera cobrança no atendimento, pois já foi pago na compra.
+
+14.6 Comissão em Serviços de Pacote
+
+Para serviços executados via pacote:
+
+Comissão não depende do pagamento da comanda
+
+Comissão é gerada no momento do uso do pacote
+
+Modelos possíveis (configurável):
+
+Comissão fixa por uso
+
+Comissão percentual baseada no valor interno do pacote
+
+Comissão diferenciada para pacote
+
+14.7 Controle para NÃO deixar o sistema refém do profissional
+
+Regras obrigatórias:
+
+O pacote pertence ao cliente, não ao profissional
+
+Qualquer barbeiro pode executar o serviço do pacote
+
+Comissão é atribuída a quem realizou o atendimento
+
+O uso do pacote é registrado no histórico do cliente
+
+Isso evita:
+
+Dependência de um profissional específico
+
+Perda de controle financeiro
+
+Conflitos internos
+
+14.8 Serviços Adicionais no Mesmo Atendimento
+
+Se o cliente quiser:
+
+Comprar um produto
+
+Fazer um serviço adicional fora do pacote
+
+O sistema deve:
+
+Manter o serviço do pacote como R$ 0,00
+
+Adicionar novos itens normalmente
+
+Calcular comissão separadamente por item
+
+Exemplo:
+
+Corte via pacote → R$ 0,00
+
+Produto → R$ 50,00
+
+Comissão calculada apenas sobre produto
+
+14.9 Finalização do Pacote
+
+Quando a quantidade restante chega a 0:
+
+Status do pacote muda para Finalizado
+
+Pacote não pode mais ser usado
+
+Sistema sugere recompra de pacote
+
+14.10 Regras de Segurança
+
+Uso de pacote não pode ser editado após fechamento da comanda
+
+Cancelamento exige permissão de admin
+
+Todo uso gera log:
+
+Cliente
+
+Profissional
+
+Data
+
+Pacote
+
+Serviço executado
+
+Princípio-chave do Pacote
+
+O pacote organiza o financeiro, protege o caixa e dá liberdade operacional — sem travar o profissional.

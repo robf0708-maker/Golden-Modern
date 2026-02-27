@@ -1,0 +1,252 @@
+### 📅 1. Agenda/Agendamentos
+
+**O que faz:**
+- Calendário visual por barbeiro (08:00-20:00, intervalos de 30min)
+- Criar agendamentos com cliente, serviço, barbeiro e horário
+- Navegar entre datas (anterior, próximo, hoje)
+- Detectar conflitos de horário automaticamente
+- Calcular horário de término baseado na duração do serviço
+- Mostrar alertas quando cliente tem pacote disponível
+- Abrir comanda direto do agendamento
+- Cancelar agendamentos
+
+**Status:** ✅ 95% Funcional
+
+---
+
+### 🧾 2. Comandas (Atendimento/Vendas)
+
+**O que faz:**
+- Criar comanda para cliente com barbeiro selecionado
+- Adicionar serviços à comanda (preço normal ou usando pacote)
+- Adicionar produtos à comanda (com quantidade)
+- Vender pacotes de serviços (ex: "10 Cortes por R$200")
+- Usar pacotes do cliente automaticamente (desconto/gratuidade)
+- Calcular comissões em tempo real
+- Remover itens da comanda
+- Fechar comanda com opções de pagamento:
+  - Dinheiro (com cálculo de troco)
+  - Pix
+  - Cartão de Crédito
+  - Cartão de Débito
+- Visualizar comandas abertas e fechadas
+- Cancelar comandas
+
+**Funcionalidades Avançadas:**
+- Detecta pacotes compatíveis com o serviço selecionado
+- Pergunta se quer usar pacote ou pagar normal
+- Calcula comissão diferente para uso de pacote vs pagamento
+- Reserva uso de pacote ao abrir comanda pelo agendamento
+- Cria dois itens ao vender pacote: (1) venda e (2) primeiro uso
+
+**Status:** ✅ 98% Funcional (sistema mais completo)
+
+---
+
+### 💰 3. Caixa (Controle Financeiro)
+
+**O que faz:**
+- Abrir caixa diário (definir valor inicial de troco)
+- Registrar **sangrias** (retiradas de dinheiro)
+- Registrar **reforços** (adições de dinheiro)
+- Registrar **estornos** (devoluções)
+- Ver todas as movimentações do dia
+- Visualizar totais por forma de pagamento:
+  - Total em Dinheiro
+  - Total em Pix
+  - Total em Cartão de Crédito
+  - Total em Cartão de Débito
+- Fechar caixa com contagem e conferência
+- Calcular diferença (discrepância) automaticamente
+- Auditoria completa de transações
+
+**Status:** ✅ 95% Funcional
+
+---
+
+### 👥 4. Clientes
+
+**O que faz:**
+- Cadastrar clientes (nome, telefone, email, observações)
+- Editar informações de clientes
+- Visualizar histórico completo:
+  - Serviços recebidos
+  - Produtos comprados
+  - Pacotes adquiridos
+  - Usos de pacotes
+  - Valores pagos e comissões geradas
+- Ver pacotes ativos de cada cliente (quantidade restante, validade)
+- Filtrar clientes por:
+  - Nome, telefone ou email
+  - Período (data início e fim)
+  - Status: Todos, Com Pacote, Recorrentes, Inativos, Novos
+- Estatísticas de clientes:
+  - Total de clientes cadastrados
+  - Clientes com pacotes ativos
+  - Clientes recorrentes
+  - Clientes inativos (+60 dias sem visita)
+- Excluir clientes
+
+**Classificação Automática:**
+- **Novo:** nunca teve atendimento
+- **Recorrente:** múltiplos atendimentos no período
+- **Ativo:** última visita ≤ 30 dias
+- **Inativo:** última visita > 30 dias
+
+**Status:** ✅ 95% Funcional
+
+---
+
+### ✂️ 5. Serviços
+
+**O que faz:**
+- Cadastrar serviços (Corte, Barba, Pezinho, etc.)
+- Definir preço e duração (30, 60, 90 ou 120 minutos)
+- Configurar comissão por serviço:
+  - Usar comissão padrão do barbeiro
+  - Definir percentual específico
+  - Definir valor fixo
+- Ativar/desativar serviços
+- Editar e excluir serviços
+- Buscar serviços por nome
+
+**Status:** ✅ 100% Funcional
+
+---
+
+### 🛍️ 6. Produtos
+
+**O que faz:**
+- Cadastrar produtos (pomadas, shampoos, etc.)
+- Definir categoria, preço de venda e preço de custo
+- Controlar estoque atual
+- Definir estoque mínimo (gera alerta quando baixo)
+- Configurar se produto gera comissão (e o percentual)
+- Visualizar alertas de estoque baixo
+- Ativar/desativar produtos
+- Editar e excluir produtos
+- Buscar produtos por nome ou categoria
+
+**Funcionalidade Avançada:**
+- Estoque é decrementado automaticamente ao vender em comanda
+- Estoque é restaurado ao cancelar comanda
+
+**Status:** ✅ 100% Funcional
+
+---
+
+### 📦 7. Pacotes de Serviços
+
+**O que faz:**
+- Criar pacotes (ex: "10 Cortes", "Combo Corte + Barba 4x")
+- Definir serviço associado ao pacote
+- Definir quantidade de usos (4, 10, 12, etc.)
+- Definir preço total do pacote
+- Definir validade em dias (30, 60, 90, etc.)
+- Ativar/desativar pacotes
+- Editar e excluir pacotes
+- Buscar pacotes por nome
+
+**Como Funciona:**
+- Pacotes são vendidos em Comandas (como item de venda)
+- Sistema cria automaticamente um "client_package" (pacote do cliente)
+- Cliente pode usar o pacote em atendimentos futuros (sem pagar de novo)
+- Sistema rastreia usos e quantidade restante
+- Pacotes expiram após a validade definida
+
+**Status:** ✅ 95% Funcional
+
+---
+
+### 💼 8. Barbeiros
+
+**O que faz:**
+- Cadastrar barbeiros/profissionais
+- Definir comissão padrão (percentual ou valor fixo)
+- Adicionar foto/avatar
+- Ativar/desativar barbeiro
+- Editar e excluir barbeiros
+
+**Comissão Padrão:**
+- Tipo: Percentual (%) ou Valor Fixo (R$)
+- Valor padrão: 50%
+- Usada quando serviço não tem comissão específica
+
+**Status:** ✅ 100% Funcional
+
+---
+
+### 💵 9. Comissões
+
+**O que faz:**
+- Visualizar comissões por período (data início e fim)
+- Filtrar por barbeiro específico
+- Ver resumo de comissões:
+  - Total de comissões no período
+  - Total de transações
+  - Número de barbeiros
+- Ver detalhes por barbeiro:
+  - Total de comissões
+  - Comissões pagas vs pendentes
+  - Quantidade de transações
+- Marcar comissões como pagas
+- Visualizar origem da comissão (serviço, produto ou uso de pacote)
+
+**Cálculo Automático:**
+- **Serviço:** baseado em comissão do serviço ou padrão do barbeiro
+- **Produto:** percentual sobre preço de venda (se configurado)
+- **Pacote:** percentual sobre valor unitário (preço ÷ quantidade original)
+
+**Status:** ✅ 90% Funcional
+
+---
+
+### 📊 10. Relatórios de Pacotes
+
+**O que faz:**
+- Listar todos os pacotes ativos dos clientes
+- Mostrar usos restantes vs total
+- Alertar pacotes expirando nos próximos 7 dias
+- Visualizar histórico de usos recentes
+- Ver receita em pacotes pendentes de conclusão
+- Filtrar por cliente
+
+**KPIs Exibidos:**
+- Total de pacotes ativos
+- Receita total em pacotes
+- Quantidade de usos recentes
+
+**Status:** ✅ 90% Funcional
+
+---
+
+### 📈 11. Dashboard
+
+**O que faz:**
+- Visualizar KPIs do dia:
+  - Total de agendamentos hoje
+  - Total de clientes cadastrados
+  - Status do caixa (aberto/fechado)
+  - Faturamento do dia
+- Botões de acesso rápido:
+  - Abrir Agenda
+  - Cadastrar Serviços
+  - Gerenciar Barbeiros
+- Resumo consolidado do dia
+
+**Status:** ✅ 90% Funcional
+**Pendência:** Seção "Próximos Atendimentos" (placeholder vazio)
+
+---
+
+### 🔐 12. Segurança e Controle de Acesso
+
+**O que faz:**
+- Login com email e senha
+- Criar nova conta (signup)
+- Logout
+- Isolamento de dados por barbearia (multi-tenant):
+  - Cada barbearia só vê seus próprios dados
+  - Impossível acessar dados de outras barbearias
+- Controle de permissões por usuário
+- Sessão segura

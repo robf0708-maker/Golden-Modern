@@ -1,0 +1,234 @@
+## AUDITORIA COMPLETA DO SISTEMA - NÃO FAÇA ALTERAÇÕES
+
+Preciso de informações completas para análise externa. Não faça alterações, apenas forneça os dados.
+
+### 1. STATUS DAS IMPLEMENTAÇÕES ANTERIORES
+
+As 5 correções que foram planejadas JÁ FORAM IMPLEMENTADAS?
+- Correção 1: non_text exclusivo para mídia
+- Correção 2: Nome sempre usado
+- Correção 3: Companion flow (usa campo state)
+- Correção 4: Pacote bloqueado para companion
+- Correção 5: Multi-serviço
+
+Para cada uma, informe:
+- [ ] IMPLEMENTADA (código já foi alterado)
+- [ ] NÃO IMPLEMENTADA (ainda no planejamento)
+- [ ] PARCIALMENTE (implementada mas com problemas)
+
+Se implementadas, mostre quais arquivos foram alterados e quando (commit/timestamp).
+
+---
+
+### 2. CÓDIGO ATUAL COMPLETO
+
+Forneça o código COMPLETO e ATUAL destes arquivos:
+
+**A) Arquivos principais:**
+```
+- server/chatbot/state-machine.ts (COMPLETO)
+- server/chatbot/response-formatter.ts (COMPLETO)
+- server/chatbot/booking-service.ts (COMPLETO)
+- server/chatbot/availability-service.ts (COMPLETO)
+- server/chatbot/handler.ts (COMPLETO)
+```
+
+**B) Schema e tipos:**
+```
+- shared/schema.ts (apenas tabela chat_conversations)
+- server/chatbot/types.ts (se existir)
+```
+
+---
+
+### 3. LOGS DOS BUGS RECENTES
+
+**A) Conversa do Buchecha (bugs identificados):**
+
+Forneça os logs COMPLETOS da conversa onde ocorreram estes bugs:
+1. Cliente pediu 9h e 10h → bot sempre voltou pra 08:00
+2. Cliente pediu "cancelar as duas" → só cancelou 1
+3. Template mostrou `{nome }` literal ao invés do nome
+4. Cliente pediu "dia 11" → bot ignorou e sugeriu dia 10
+
+**B) Conversa do robson teste (bugs identificados):**
+
+Forneça os logs COMPLETOS da conversa onde ocorreram:
+1. Lista numerada de agendamentos (contra prompt)
+2. "Foi cancelado?" → bot não entendeu
+3. "Posso cancelar o outro?" → "era o único" (mas tinha 2)
+4. Template `{nome }` literal
+
+**Formato dos logs:**
+- Timestamp de cada mensagem
+- Quem enviou (cliente/bot)
+- Estado da conversa no momento
+- Intent classificado
+- Campos pending* atualizados
+
+---
+
+### 4. CONFIGURAÇÕES ATUAIS
+
+**A) Chatbot Settings da barbearia:**
+```sql
+SELECT * FROM chatbot_settings WHERE barbershop_id = '[id da barbearia de teste]';
+```
+
+Mostre principalmente:
+- systemPrompt (COMPLETO)
+- greetingNewClient
+- greetingReturningClient
+- minAdvanceMinutes
+- maxDaysAhead
+
+**B) Templates de mensagem:**
+```sql
+SELECT * FROM notification_settings WHERE barbershop_id = '[id]';
+```
+
+Mostre principalmente o campo `templates` (JSON).
+
+---
+
+### 5. DADOS DE EXEMPLO
+
+**A) Cliente com múltiplos agendamentos:**
+```sql
+SELECT * FROM clients WHERE phone LIKE '%99697%' OR phone LIKE '%88055%';
+SELECT * FROM appointments WHERE client_id IN (...) AND status != 'cancelled';
+SELECT * FROM client_packages WHERE client_id IN (...);
+```
+
+**B) Serviços cadastrados:**
+```sql
+SELECT id, name, duration, price, active FROM services 
+WHERE barbershop_id = '[id]' AND active = true;
+```
+
+**C) Barbeiros e disponibilidade:**
+```sql
+SELECT id, name, active, lunch_start, lunch_end FROM barbers 
+WHERE barbershop_id = '[id]' AND active = true;
+```
+
+---
+
+### 6. FLUXO ATUAL DE ESTADOS
+
+Descreva como funciona HOJE (código atual) para cada cenário:
+
+**CENÁRIO 1: Cliente novo (não cadastrado)**
+1. Cliente: "Oi"
+2. Sistema: [o que faz? que estado? que response?]
+3. Cliente: "Robson"
+4. Sistema: [o que faz? cadastra? muda estado?]
+... (continue até agendar)
+
+**CENÁRIO 2: Cliente com pacote ativo**
+1. Cliente: "Quero agendar"
+2. Sistema: [verifica pacote quando? em que estado?]
+3. Sistema: [pergunta se quer usar? sempre?]
+... (continue)
+
+**CENÁRIO 3: Cliente pede horário específico que não existe**
+1. Cliente: "Quero agendar às 10h"
+2. Sistema: [o que faz? busca alternativas? como?]
+3. Cliente: "Não tem às 11h?"
+4. Sistema: [busca de novo? a partir de onde?]
+
+**CENÁRIO 4: Cliente quer cancelar múltiplos agendamentos**
+1. Cliente tem 2 agendamentos ativos
+2. Cliente: "Quero cancelar os dois"
+3. Sistema: [como detecta "os dois"? que intent? que lógica?]
+4. Sistema: [cancela como? um por um? de uma vez?]
+
+**CENÁRIO 5: Cliente quer agendar pra outra pessoa**
+1. Cliente: "Quero agendar pro meu filho"
+2. Sistema: [detecta? que intent? que estado?]
+3. Sistema: [pede nome? cadastra? como diferencia?]
+4. Sistema: [aplica pacote do cliente? como bloqueia?]
+
+**CENÁRIO 6: Cliente quer múltiplos serviços**
+1. Cliente: "Quero corte e barba"
+2. Sistema: [detecta os 2? como? busca combo ou separa?]
+3. Sistema: [agenda quanto tempo? como?]
+4. Sistema: [salva onde? appointment_services?]
+
+**CENÁRIO 7: Admin entra na conversa**
+1. Cliente conversando com bot
+2. Admin manda mensagem
+3. Sistema: [para de responder? como detecta? human_takeover?]
+4. Admin resolve
+5. Sistema: [volta a responder quando?]
+
+---
+
+### 7. CASOS DE ERRO CONHECIDOS
+
+Liste TODOS os bugs conhecidos até agora com:
+- Descrição do bug
+- Quando acontece
+- Exemplo de conversa
+- Causa provável (se souber)
+- Já tem correção planejada? Qual?
+
+---
+
+### 8. DEPENDÊNCIAS E INTEGRAÇÕES
+
+**A) Sistema de notificações:**
+- Funciona independente do chatbot?
+- Envia quando? (agendamento confirmado, cancelado, lembrete)
+- Usa templates customizáveis?
+- Templates aceitam quais variáveis? ({clientName}, {barberName}, etc)
+
+**B) Agenda do admin:**
+- Os agendamentos criados pelo bot aparecem corretamente?
+- Múltiplos serviços aparecem como?
+- Bloqueios de horário funcionam?
+
+**C) Sistema de pacotes:**
+- Verifica uso restante?
+- Desconta automaticamente ao agendar?
+- Bloqueia se acabou os usos?
+
+---
+
+### 9. HISTÓRICO DE MUDANÇAS RECENTES
+
+Liste os últimos 10 commits com:
+- Data/hora
+- Hash do commit
+- Descrição
+- Arquivos modificados
+
+---
+
+### 10. AMBIENTE E CONFIGURAÇÃO
+
+**A) Banco de dados:**
+- PostgreSQL version
+- Timezone configurado
+- Último backup (quando?)
+
+**B) Aplicação:**
+- Node version
+- Em produção? Quantas barbearias ativas?
+- Tem ambiente de teste separado?
+
+**C) Deploy:**
+- Processo de deploy atual
+- Como testa antes de subir?
+- Tem rollback automático?
+
+---
+
+## IMPORTANTE:
+
+- NÃO faça nenhuma alteração em código
+- NÃO sugira correções ainda
+- APENAS forneça as informações solicitadas
+- Se algo não existe ou não se aplica, informe claramente
+
+Aguardo todas as informações acima para análise externa completa.

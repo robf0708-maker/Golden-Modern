@@ -1,0 +1,417 @@
+MAPEAMENTO DE RISCOS E BUGS FUTUROS POSSÍVEIS
+🔮 ANÁLISE PREDITIVA DE BUGS
+Baseado na arquitetura atual e nos padrões identificados, aqui estão os bugs que PODEM SURGIR após as correções:
+
+📋 CENÁRIOS DE RISCO POR CATEGORIA
+CATEGORIA 1: CLASSIFICAÇÃO DE INTENT (IA)
+RISCO 1.1: IA classificar errado "quantidade"
+Cenário:
+Cliente: "Quero 3 cortes" (pra ele, esposa e filho)
+IA classifica: select_service (1 corte)
+Sistema agenda: 1 corte
+Por quê pode acontecer?
+
+Intent atual não tem campo quantity
+Lógica de companion só detecta "meu filho", não "3 pessoas"
+
+Como prevenir:
+typescript// Adicionar ao CLASSIFY_INTENT_TOOL:
+{
+  name: "book_multiple_people",
+  description: "Cliente quer agendar para N pessoas",
+  parameters: {
+    quantity: "number",  // 2, 3, 4...
+    relationship: "string[]"  // ["filho", "esposa"]
+  }
+}
+
+RISCO 1.2: IA não detectar remarcação
+Cenário:
+Cliente: "Mudar meu corte de amanhã pra sexta"
+IA classifica: unclear
+Sistema: "Pode explicar melhor?"
+Por quê pode acontecer?
+
+Não existe intent reschedule_appointment
+IA tenta encaixar em cancel_appointment + select_service
+
+Como prevenir:
+typescript{
+  name: "reschedule_appointment",
+  parameters: {
+    appointment_index: "number",
+    new_date: "YYYY-MM-DD",
+    new_time: "HH:MM"
+  }
+}
+
+RISCO 1.3: Cliente pede "mais cedo" mas não especifica quanto
+Cenário:
+Bot: "Próximo horário: 16h"
+Cliente: "Tem mais cedo?"
+IA classifica: reject_time ✅
+Sistema busca: desde 08:00 de novo ❌
+Por quê pode acontecer?
+
+reject_time não tem parâmetro "direção" (mais cedo vs mais tarde)
+Sistema não sabe se cliente quer < 16h ou > 16h
+
+Como prevenir:
+typescript// Adicionar campo ao reject_time:
+{
+  name: "reject_time",
+  parameters: {
+    reason: "earlier" | "later" | "other",
+    preferred_time: "HH:MM" // se mencionar
+  }
+}
+
+CATEGORIA 2: ESTADO E FLUXO
+RISCO 2.1: Cliente muda de ideia no meio do fluxo
+Cenário:
+Sistema: "Qual serviço?" (NEED_SERVICE)
+Cliente: "Corte"
+Sistema: "Qual barbeiro?" (NEED_BARBER)
+Cliente: "Na verdade quero barba" (mudou de ideia)
+IA classifica: select_service (barba)
+Sistema: ???
+Estado atual: NEED_BARBER
+Intent: select_service (só válido em NEED_SERVICE)
+O que pode acontecer:
+
+Sistema ignora (porque não é select_barber)
+OU reseta tudo e volta pro início
+OU fica confuso
+
+Como prevenir:
+typescript// Em QUALQUER estado, aceitar select_service como "mudança de ideia":
+if (intent.intent === 'select_service' && 
+    currentState !== 'NEED_SERVICE') {
+  // Reset do fluxo, mantém só o cliente
+  return {
+    newState: 'NEED_SERVICE',
+    conversationUpdates: {
+      pendingServiceId: null,
+      pendingBarberId: null,
+      pendingDate: null,
+      pendingTime: null,
+    },
+    responseData: { type: 'service_changed', newService: ... }
+  };
+}
+
+RISCO 2.2: Cliente abandona e volta 2 dias depois
+Cenário:
+Dia 1:
+  Cliente: "Quero agendar" → NEED_SERVICE
+  Cliente: "Corte" → NEED_BARBER
+  [Cliente some]
+
+Dia 3:
+  Cliente: "Oi"
+  Sistema: [estado = NEED_BARBER ainda]
+  Sistema: "Qual barbeiro?" ❌
+Por quê pode acontecer?
+
+Não tem timeout de sessão
+pending* ficam lá pra sempre
+Cliente não lembra do contexto
+
+Como prevenir:
+typescript// No início do handleIncomingMessage:
+const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 min
+const lastMessageTime = new Date(conversation.last_message_at);
+const now = getNowAsUtcLocal();
+
+if (now - lastMessageTime > SESSION_TIMEOUT) {
+  // Reset da sessão
+  await storage.updateConversation(conversation.id, {
+    pendingServiceId: null,
+    pendingBarberId: null,
+    pendingDate: null,
+    pendingTime: null,
+    state: 'idle',
+  });
+  // Recalcula currentState (vai pra NEED_SERVICE)
+}
+
+CATEGORIA 3: DADOS E VALIDAÇÃO
+RISCO 3.1: Barbeiro ficou indisponível entre oferta e confirmação
+Cenário:
+10:00 - Sistema: "Tenho 14h com João"
+10:05 - [Admin bloqueia João às 14h]
+10:06 - Cliente: "Pode sim"
+Sistema: Cria agendamento ✅ (não revalida)
+Resultado: Double booking ❌
+Por quê pode acontecer?
+
+validateSlot() só checa no handleNeedTime
+Não revalida no accept_time
+
+Como prevenir:
+typescript// No accept_time, antes de criar:
+const stillAvailable = await validateSlot({
+  barberId, date, time, duration
+});
+
+if (!stillAvailable.isAvailable) {
+  return {
+    newState: 'NEED_TIME',
+    responseData: { 
+      type: 'slot_no_longer_available',
+      reason: stillAvailable.reason 
+    }
+  };
+}
+
+RISCO 3.2: Cliente tem pacote mas pede serviço não incluso
+Cenário:
+Cliente tem: Pacote de corte (4x)
+Cliente pede: Barba
+Sistema: "Quer usar pacote?" ❌ (pacote não cobre barba)
+Por quê pode acontecer?
+
+getClientPackageForService() retorna null se não cobrir
+Mas mensagem de "quer usar pacote?" ainda pode aparecer
+
+Como prevenir:
+
+Já está correto ✅
+Só pergunta se packageInfo?.hasPackage === true
+
+
+RISCO 3.3: Cliente agenda múltiplos serviços mas um dos barbeiros não faz um deles
+Cenário:
+Cliente: "Corte e barba com João"
+João só faz: Corte (não faz barba)
+Sistema agenda: 60min com João (errado)
+Por quê pode acontecer?
+
+Não tem validação de "barbeiro X faz serviço Y"
+Assume que todo barbeiro faz tudo
+
+Como prevenir:
+typescript// Adicionar tabela barber_services (se necessário):
+// barber_id | service_id
+
+// Validar antes de agendar:
+for (const service of allServices) {
+  const barberDoesService = await checkBarberService(
+    barberId, service.id
+  );
+  if (!barberDoesService) {
+    return { error: `${barberName} não faz ${service.name}` };
+  }
+}
+OU se todos barbeiros fazem tudo:
+
+Adicionar comentário no código: "Assumindo que todos barbeiros fazem todos serviços"
+
+
+CATEGORIA 4: UX E EDGE CASES
+RISCO 4.1: Cliente cancela e imediatamente quer reagendar mesmo horário
+Cenário:
+Cliente: "Cancelar meu corte de amanhã 14h"
+Sistema: [cancela]
+Cliente: "Marcar de novo amanhã 14h"
+Sistema: "14h não disponível" ❌ (slot acabou de ser liberado mas cache?)
+Por quê pode acontecer?
+
+Se tiver cache de disponibilidade
+Slot pode não aparecer imediatamente
+
+Como prevenir:
+
+Invalidar cache após cancelamento
+OU não ter cache (buscar sempre do banco)
+
+
+RISCO 4.2: Cliente usa gírias ou linguagem informal
+Cenário:
+Cliente: "Bora marcar um cut aí mano"
+IA classifica: unclear ❌
+Sistema: "Pode explicar melhor?"
+Por quê pode acontecer?
+
+IA treinada em português formal
+"cut" pode não ser reconhecido como "corte"
+
+Como prevenir:
+typescript// No systemPrompt da classificação:
+"Aceite gírias brasileiras:
+- cut, corte, cabelo = serviço de corte
+- barba, barbeado = serviço de barba
+- bora, quero, vou = intenção de agendar
+- mano, brother, véi = ignorar (não afeta intent)"
+
+RISCO 4.3: Cliente pergunta preço antes de agendar
+Cenário:
+Cliente: "Quanto custa o corte?"
+IA classifica: unclear
+Sistema: "Pode explicar melhor?"
+Por quê pode acontecer?
+
+Não existe intent ask_price
+Prompt diz "não mencionar preços fora de CONFIRMATION"
+
+Como prevenir:
+typescript{
+  name: "ask_price",
+  description: "Cliente pergunta preço de serviço",
+  parameters: {
+    service_name: "string"
+  }
+}
+
+// Handler:
+if (intent.intent === 'ask_price') {
+  const service = services.find(s => s.name === intent.service_name);
+  return {
+    newState: currentState, // Mantém estado
+    responseData: {
+      type: 'price_info',
+      service: service.name,
+      price: service.price,
+    }
+  };
+}
+
+RISCO 4.4: Cliente quer agendar "semana que vem" mas não especifica dia
+Cenário:
+Cliente: "Quero agendar semana que vem"
+IA extrai: date_value: null ❌
+Sistema: Busca próximo disponível (pode ser hoje)
+Por quê pode acontecer?
+
+"Semana que vem" é vago
+IA pode não converter pra data específica
+
+Como prevenir:
+typescript// Se date_value é vago ("semana que vem", "mês que vem"):
+// Perguntar dia específico:
+if (intent.date_value === 'next_week') {
+  return {
+    newState: currentState,
+    responseData: { type: 'ask_specific_date' }
+  };
+}
+
+CATEGORIA 5: INTEGRAÇÃO E SISTEMA
+RISCO 5.1: Notificação falha mas agendamento foi criado
+Cenário:
+Sistema cria agendamento ✅
+Sistema tenta enviar notificação ❌ (API fora)
+Cliente não recebe confirmação
+Cliente acha que não foi agendado
+Por quê pode acontecer?
+
+Notificação é async separado
+Se falhar, não rollback do agendamento
+
+Como prevenir:
+typescript// Logar falhas de notificação mas não bloquear:
+try {
+  await scheduleAppointmentNotifications(...);
+} catch (error) {
+  console.error('[Notification] Failed:', error);
+  // NÃO propagar erro (agendamento já foi criado)
+  // Admin pode reenviar manualmente depois
+}
+
+RISCO 5.2: Timezone - cliente em fuso diferente
+Cenário:
+Barbearia: São Paulo (GMT-3)
+Cliente viajando: Portugal (GMT+0)
+Cliente: "Quero agendar às 14h"
+Sistema interpreta: 14h São Paulo OU 14h Portugal?
+Por quê pode acontecer?
+
+Sistema assume America/Sao_Paulo sempre
+Não detecta fuso do cliente
+
+Como prevenir:
+
+Documentar que sistema usa timezone da barbearia sempre
+Se cliente estiver em outro país, ele precisa converter mentalmente
+OU: Adicionar detecção de timezone (complexo)
+
+Recomendação: Deixar como está (timezone da barbearia)
+
+🛡️ SISTEMA DE SEGURANÇA - "FORA DO ESCOPO"
+REQUISITO 3:
+
+"Se ela não saber ou não estiver liberada, ela avisa e para até admin responder"
+
+
+COMO IMPLEMENTAR:
+1. Lista de intents "fora do escopo"
+typescriptconst OUT_OF_SCOPE_KEYWORDS = [
+  'produto', 'comprar', 'vender',
+  'preço de', 'quanto custa',  // se não for serviço
+  'promoção', 'desconto',
+  'como funciona', 'explicar',
+  'horário de funcionamento',
+  'endereço', 'como chegar',
+  'telefone', 'contato',
+  'reclamação', 'problema', 'defeito',
+];
+
+function isOutOfScope(message: string): boolean {
+  const lower = message.toLowerCase();
+  return OUT_OF_SCOPE_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+2. Handler de "fora do escopo"
+typescript// No início do processWithAI:
+if (isOutOfScope(message)) {
+  // Marcar conversa como "aguardando admin"
+  await storage.updateConversation(conversation.id, {
+    human_takeover_until: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24h
+  });
+  
+  // Notificar admin (criar scheduled_message tipo "admin_alert")
+  await storage.createScheduledMessage({
+    barbershopId,
+    phone: ADMIN_PHONE, // configurar no settings
+    message: `⚠️ Cliente ${client.name} fez pergunta fora do escopo: "${message}"`,
+    type: 'admin_alert',
+    scheduledFor: new Date(), // imediato
+  });
+  
+  return {
+    message: `Entendo, ${client.name}. Vou transferir sua pergunta para nossa equipe. Aguarde que já te respondemos! 😊`,
+    shouldEndConversation: false,
+  };
+}
+
+3. Admin "libera" a conversa
+No admin dashboard (futuro):
+
+Admin vê alerta
+Admin responde diretamente no WhatsApp
+Admin clica "Liberar bot" → limpa human_takeover_until
+
+Temporário (manual):
+sql-- Admin terminou de responder:
+UPDATE chat_conversations 
+SET human_takeover_until = NULL 
+WHERE phone = '+5518...';
+
+4. Fallback para "unclear" persistente
+typescript// Se IA classificar "unclear" 3x seguidas:
+const unclearCount = conversation.message_history
+  .filter(m => m.type === 'unclear')
+  .length;
+
+if (unclearCount >= 3) {
+  // Mesma lógica de "fora do escopo"
+  await activateHumanTakeover(conversation, message);
+  return {
+    message: `Desculpe, ${client.name}, não estou conseguindo entender. Vou chamar nossa equipe para te ajudar melhor! 😊`
+  };
+}
+
+📋 RESUMO DE PREVENÇÕES
+CategoriaRiscosPrevençõesClassificação3Adicionar intents faltantesEstado/Fluxo2Timeout de sessão, aceitar mudança de ideiaDados/Validação3Revalidar slots, check barber_servicesUX/Edge cases4Aceitar gírias, intent ask_price, datas vagasIntegração2Log de falhas, documentar timezoneFORA DO ESCOPO1Sistema de human_takeover automático
+
+🎯 ESTRATÉGIA DE IMPLEMENTAÇÃO ?

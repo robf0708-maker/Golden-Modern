@@ -1,0 +1,55 @@
+[22:24, 07/02/2026] @ Robson fs : Olá boa noite
+[22:24, 07/02/2026] Estayle: Olá, Robson! O que manda para nós hoje?
+[22:24, 07/02/2026] @ Robson fs : Quero agendar
+[22:24, 07/02/2026] Estayle: Perfeito. Qual serviço você gostaria de agendar?
+[22:24, 07/02/2026] @ Robson fs : Corte
+[22:24, 07/02/2026] Estayle: Você tem preferência por algum profissional, Robson, ou posso agendar com o horário mais próximo disponível?
+[22:25, 07/02/2026] @ Robson fs : Mais próximo com quem tem
+[22:25, 07/02/2026] Estayle: Temos um horário disponível no dia 10 de fevereiro às 08:30 com o Robson. Posso confirmar para você?
+[22:25, 07/02/2026] @ Robson fs : Ok
+[22:25, 07/02/2026] Estayle: O agendamento será para:
+* Serviço: corte
+* Profissional: Robson
+* Data: 10 de fevereiro
+* Horário: 08:30
+
+Você gostaria de usar seu pacote ou prefere pagar avulso?
+[22:26, 07/02/2026] @ Robson fs : Usar o pacote
+[22:26, 07/02/2026] Estayle: Esse atendimento será descontado do seu pacote. Após esse agendamento, restarão 2 utilizações.
+
+Agendamento confirmado! Qualquer coisa, fico à disposição. Tenha um ótimo dia!
+[22:26, 07/02/2026] Estayle: Olá robson teste ! ✅
+
+Seu agendamento foi confirmado!
+
+📅 10/02/2026 às 08:30
+✂️ corte 
+💈 Robson
+
+Local: Estayle
+
+Nos vemos em breve!
+[22:27, 07/02/2026] @ Robson fs : Quero agendar para meu filho também consigo?
+[22:27, 07/02/2026] Estayle: Claro! Poderia me informar o nome do seu filho, por favor?
+[22:27, 07/02/2026] @ Robson fs : Lucas
+[22:27, 07/02/2026] Estayle: Olá, Robson! Tudo bem? Como posso ajudar hoje?
+[22:28, 07/02/2026] @ Robson fs : Quero agendar um corte para meu filho
+[22:28, 07/02/2026] Estayle: Perfeito. Qual serviço você gostaria de agendar para o Lucas?
+[22:28, 07/02/2026] @ Robson fs : Corte
+[22:28, 07/02/2026] Estayle: Ótimo. Você tem preferência por algum profissional para o corte do Lucas?
+[22:28, 07/02/2026] @ Robson fs : Não
+[22:28, 07/02/2026] Estayle: Temos um horário disponível no dia 10 de fevereiro às 08:30 com o Burdog. Posso confirmar para você?
+[22:28, 07/02/2026] @ Robson fs : Sim
+[22:28, 07/02/2026] Estayle: O resumo do agendamento é:
+* Serviço: Corte
+* Profissional: Burdog
+* Data: 10 de fevereiro
+* Horário: 08:30
+
+Você gostaria de usar seu pacote ou prefere pagar avulso?
+[22:29, 07/02/2026] @ Robson fs : Pacote
+[22:29, 07/02/2026] Estayle: Esse atendimento será descontado do seu pacote. Após esse agendamento, restarão 2 utilizações. 
+
+Agendamento confirmado! Qualquer coisa, fico à disposição. Tenha um ótimo dia!
+[22:30, 07/02/2026] @ Robson fs : Quero desmarcar esse do meu filho e pagar avulso
+[22:30, 07/02/2026] Estayle: Para eu conseguir ajudar melhor, poderia me enviar a mensagem em texto, por favor?

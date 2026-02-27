@@ -1,0 +1,122 @@
+Quero que você atue como arquiteto de software e analista financeiro do sistema.
+NÃO implemente nada agora.
+NÃO refatore.
+NÃO altere código.
+Apenas analise o código e responda de forma objetiva às perguntas abaixo.
+
+Contexto:
+Este é um sistema de barbearia com:
+- Serviços avulsos
+- Venda de pacotes
+- Uso de pacotes
+- Comissão de barbeiros
+- Caixa e DRE
+
+Estamos enfrentando mistura indevida entre:
+- Venda de pacote
+- Uso de pacote
+- Comissão de barbeiro
+- DRE / transações
+
+---
+
+### 1) MODELO DE DADOS (BANCO)
+Liste exatamente:
+
+1.1 Quais tabelas existem relacionadas a:
+- Pacotes
+- Pacotes do cliente
+- Comissões
+- Vendas / transações
+- Comandas / serviços
+
+1.2 Para cada tabela, informe:
+- Nome da tabela
+- Campos principais
+- Se existe ou não barber_id
+- Se existe service_id
+- Se existe relação com comanda
+
+---
+
+### 2) VENDA DE PACOTE (CAIXA)
+Explique exatamente:
+
+2.1 Quando um pacote é vendido:
+- Em qual tabela isso é registrado?
+- Qual tipo de registro é criado? (sale, transaction, cash_entry, outro)
+- Existe barber_id nesse registro? Se sim, de onde ele vem?
+- A venda do pacote passa por uma comanda ou não?
+
+2.2 Essa venda:
+- Entra no caixa? (sim/não)
+- Gera comissão automaticamente hoje? (sim/não)
+- Aparece no DRE? (sim/não)
+
+---
+
+### 3) USO DO PACOTE (COMANDA)
+Explique exatamente:
+
+3.1 Quando o cliente usa um pacote:
+- Qual tabela registra esse uso?
+- Existe client_package_id nesse registro?
+- Existe barber_id?
+- Existe valor monetário associado ou é apenas um "uso"?
+
+3.2 Hoje o sistema diferencia tecnicamente:
+- Serviço avulso
+- Serviço via pacote
+Ou ambos seguem o mesmo fluxo?
+
+---
+
+### 4) COMISSÃO DO BARBEIRO
+Explique exatamente:
+
+4.1 Como a comissão é calculada hoje:
+- Em que momento?
+- Com base em qual valor?
+- Em qual tabela fica registrada?
+
+4.2 No uso do pacote:
+- A comissão é calculada? (sim/não)
+- Se sim, com base em qual valor?
+- Se não, por que não é gerada?
+
+---
+
+### 5) DRE (DEMONSTRATIVO DE RESULTADO)
+Explique exatamente:
+
+5.1 De onde o DRE puxa os dados?
+5.2 Quais tipos de transações entram hoje no DRE?
+5.3 A venda de pacote entra como receita?
+5.4 O uso do pacote entra como custo?
+5.5 Existe hoje alguma separação entre:
+- Receita de pacote
+- Receita de serviço
+- Custo de comissão
+
+---
+
+### 6) DIAGNÓSTICO
+Com base na análise, responda:
+
+6.1 Em quais pontos hoje o sistema mistura indevidamente:
+- Venda de pacote com barbeiro
+- Uso de pacote com valor zero
+- Comissão não gerada ou zerada
+- DRE inconsistente
+
+6.2 Liste os **3 principais erros de modelagem ou fluxo**, sem sugerir solução ainda.
+
+---
+
+### FORMATO DA RESPOSTA
+- Seja direto
+- Use listas numeradas
+- NÃO proponha código
+- NÃO implemente nada
+- NÃO “assuma” regras de negócio
+- Baseie tudo exclusivamente no código existente

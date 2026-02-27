@@ -1,0 +1,105 @@
+🏗️ ARQUITETURA PARA SaaS MULTI-TENANT:
+NÍVEL 1: REGRAS FIXAS (CÓDIGO - NÃO MUDA)
+Essas são invioláveis (lógica core do sistema):
+typescript// Regras que NUNCA mudam (segurança e integridade)
+- Slots sempre 30 em 30min (baseado em bookingIntervalMinutes)
+- Antecedência mínima (baseado em minAdvanceMinutes)
+- Validar conflito de horário
+- Timezone América/São Paulo
+- Cliente cadastrado = consulta pacotes/agendamentos
+- Cliente novo = pede nome e cadastra
+Essas ficam no código. Admin NÃO altera.
+
+NÍVEL 2: REGRAS CONFIGURÁVEIS (BANCO - ADMIN CUSTOMIZA)
+Tabela chatbot_settings (já existe!) + novas flags:
+typescript// Comportamento customizável por barbearia
+{
+  // JÁ EXISTE:
+  enabled: boolean,
+  systemPrompt: string, // Admin escreve instruções customizadas
+  greetingNewClient: string,
+  greetingReturningClient: string,
+  minAdvanceMinutes: number,
+  maxDaysAhead: number,
+  
+  // NOVOS (adicionar):
+  prioritizeSpeed: boolean, // true = sempre oferece mais rápido primeiro
+  allowBarberChoice: boolean, // true = pergunta preferência
+  allowMultipleServices: boolean, // true = permite corte+barba
+  maxServicesPerBooking: number, // ex: 3
+  showPricesUpfront: boolean, // true = mostra preço antes de confirmar
+  requirePhoneConfirmation: boolean, // true = pede confirmação por SMS
+  customInstructions: string, // instruções extras (ex: "sempre mencionar promoções")
+}
+
+NÍVEL 3: PROMPT DINÂMICO (HÍBRIDO)
+Estrutura do prompt que vai pra IA:
+typescriptconst prompt = `
+=== REGRAS FIXAS DO SISTEMA ===
+${REGRAS_CORE} // Slots 30min, timezone, validações
+
+=== CONFIGURAÇÃO DESTA BARBEARIA ===
+${settings.systemPrompt} // Admin customiza aqui
+
+${settings.customInstructions} // Instruções extras
+
+=== COMPORTAMENTO ESPERADO ===
+${gerarComportamentoDinamico(settings)} // Baseado nas flags
+
+=== DADOS ATUAIS ===
+Estado: ${state}
+Horários disponíveis: ${slots}
+Cliente: ${cliente}
+Pacotes: ${pacotes}
+
+=== SUA TAREFA ===
+${gerarTarefaPorEstado(state, settings)}
+`
+
+📋 EXEMPLO PRÁTICO (2 BARBEARIAS DIFERENTES):
+BARBEARIA A (Foco em velocidade):
+javascript{
+  prioritizeSpeed: true,
+  allowBarberChoice: true,
+  systemPrompt: "Sempre ofereça o horário mais próximo primeiro. 
+                 Se cliente insistir em barbeiro específico, 
+                 mostre a diferença de tempo."
+}
+```
+
+**Conversa:**
+```
+Cliente: "Quero corte"
+IA: "Próximo horário: hoje 14h com João. 
+     Prefere ou quer escolher barbeiro?"
+
+BARBEARIA B (Foco em relacionamento):
+javascript{
+  prioritizeSpeed: false,
+  allowBarberChoice: true,
+  systemPrompt: "Sempre pergunte preferência de barbeiro. 
+                 Clientes valorizam relacionamento com profissional."
+}
+```
+
+**Conversa:**
+```
+Cliente: "Quero corte"
+IA: "Tem preferência de barbeiro? 
+     Temos João, Carlos e Pedro disponíveis."
+
+🎯 COMO FICA O PRD ENTÃO:
+PRD vai ter 3 CAMADAS:
+
+CORE (imutável) - Lógica de slots, timezone, validações
+CONFIGURÁVEL (flags) - Comportamentos que admin liga/desliga
+CUSTOMIZÁVEL (prompt) - Admin escreve instruções em linguagem natural
+
+
+✅ VANTAGENS DESSA ABORDAGEM:
+
+✅ Escalável - Cada barbearia customiza sem mexer no código
+✅ Seguro - Regras críticas ficam no código (admin não quebra)
+✅ Flexível - Admin pode ir ajustando conforme aprende o negócio
+✅ Simples de manter - Um código atende N barbearias
+
