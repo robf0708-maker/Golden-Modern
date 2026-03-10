@@ -114,6 +114,7 @@ export default function PublicBooking() {
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [appointmentToCancel, setAppointmentToCancel] = useState<string | null>(null);
   const [isLookingUp, setIsLookingUp] = useState(false);
+  const [isAutoAssigning, setIsAutoAssigning] = useState(false);
 
   const { data: barbershop } = useQuery({
     queryKey: [`/public/${barbershopId}/info`],
@@ -458,6 +459,51 @@ export default function PublicBooking() {
     setAdditionalServices([]);
     setSelectedTime(null);
     setStep('barber');
+  };
+
+  const handleAutoAssign = async () => {
+    if (!selectedService) return;
+    setIsAutoAssigning(true);
+    try {
+      const serviceId = usePackageMode && selectedPackage
+        ? selectedPackage.serviceId
+        : selectedService.id;
+
+      const res = await fetch(`/api/public/${barbershopId}/auto-assign-barber?serviceId=${serviceId}`);
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        toast({
+          title: "Nenhum horário disponível",
+          description: data.error || "Não encontramos profissional disponível. Escolha manualmente.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setSelectedBarber({
+        id: data.barberId,
+        name: data.barberName,
+        avatar: data.barberAvatar,
+        role: data.barberRole,
+        lunchStart: data.barberLunchStart,
+        lunchEnd: data.barberLunchEnd,
+        breakSchedule: data.barberBreakSchedule,
+      });
+
+      const [year, month, day] = data.firstSlotDate.split('-').map(Number);
+      setSelectedDate(new Date(year, month - 1, day));
+      setSelectedTime(data.firstSlotTime);
+      setStep('confirm');
+    } catch {
+      toast({
+        title: "Erro",
+        description: "Não foi possível buscar horário disponível.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsAutoAssigning(false);
+    }
   };
 
   const getTotalDuration = () => {
@@ -905,8 +951,27 @@ export default function PublicBooking() {
                 </div>
               )}
               
+              <Button
+                variant="outline"
+                className="w-full mt-4 border-primary/30 hover:bg-primary/5"
+                disabled={!selectedService || isAutoAssigning}
+                onClick={handleAutoAssign}
+                data-testid="button-auto-assign"
+              >
+                {isAutoAssigning ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Buscando horário...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    Primeiro horário disponível
+                  </>
+                )}
+              </Button>
               <Button 
-                className="w-full mt-4 bg-primary hover:bg-primary/90"
+                className="w-full mt-2 bg-primary hover:bg-primary/90"
                 disabled={!selectedService}
                 onClick={() => setStep('datetime')}
                 data-testid="button-continue-services"

@@ -73,6 +73,7 @@ export default function Barbers() {
     commissionType: "percentage",
     commissionValue: "50",
     active: true,
+    allowAutoAssign: true,
     avatar: "",
   });
   const [breakSchedule, setBreakSchedule] = useState<BreakSchedule>(DEFAULT_BREAK_SCHEDULE);
@@ -87,7 +88,7 @@ export default function Barbers() {
   const { uploadFile, isUploading } = useUpload();
 
   const resetForm = () => {
-    setFormData({ name: "", phone: "", password: "", role: "", commissionType: "percentage", commissionValue: "50", active: true, avatar: "" });
+    setFormData({ name: "", phone: "", password: "", role: "", commissionType: "percentage", commissionValue: "50", active: true, allowAutoAssign: true, avatar: "" });
     setBreakSchedule(DEFAULT_BREAK_SCHEDULE);
     setShowBreakSchedule(false);
     setAvatarPreview(null);
@@ -107,6 +108,7 @@ export default function Barbers() {
       commissionType: barber.commissionType,
       commissionValue: barber.commissionValue,
       active: barber.active,
+      allowAutoAssign: barber.allowAutoAssign ?? true,
       avatar: barber.avatar || "",
     });
     if (barber.breakSchedule) {
@@ -177,6 +179,7 @@ export default function Barbers() {
         commissionType: formData.commissionType,
         commissionValue: formData.commissionValue,
         active: formData.active,
+        allowAutoAssign: formData.allowAutoAssign,
         avatar: formData.avatar || null,
         breakSchedule: breakSchedule,
       };
@@ -418,6 +421,17 @@ export default function Barbers() {
                     id="active"
                     checked={formData.active}
                     onCheckedChange={(checked) => setFormData({ ...formData, active: checked })}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label htmlFor="allowAutoAssign">Disponível para "Primeiro horário disponível"</Label>
+                    <p className="text-xs text-muted-foreground">Incluir na opção de agendamento automático</p>
+                  </div>
+                  <Switch
+                    id="allowAutoAssign"
+                    checked={formData.allowAutoAssign}
+                    onCheckedChange={(checked) => setFormData({ ...formData, allowAutoAssign: checked })}
                   />
                 </div>
                 <DialogFooter>

@@ -79,6 +79,7 @@ export const barbers = pgTable("barbers", {
   lunchEnd: text("lunch_end"), // DEPRECATED: use breakSchedule - mantido para migração
   breakSchedule: json("break_schedule").$type<BreakSchedule>(), // Intervalo configurável por dia da semana
   active: boolean("active").notNull().default(true),
+  allowAutoAssign: boolean("allow_auto_assign").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

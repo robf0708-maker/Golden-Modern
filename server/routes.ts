@@ -21,6 +21,7 @@ import {
 } from "@shared/schema";
 import { scheduleAppointmentNotifications, scheduleCancellationMessage, scheduleWelcomeMessage } from "./messaging";
 import { handleIncomingMessage } from "./chatbot";
+import { getAvailabilitySummaryForBarbers } from "./chatbot/availability-service";
 import { getProvider } from "./messaging/provider-interface";
 import { sendPasswordResetEmail } from "./email";
 import { normalizePhone, isValidBrazilianPhone } from "./utils/phone";
@@ -3138,6 +3139,87 @@ export async function registerRoutes(
         lunchStart: b.lunchStart,
         lunchEnd: b.lunchEnd
       })));
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Auto-assign barber: returns first available barber + slot for given service
+  app.get("/api/public/:barbershopId/auto-assign-barber", async (req, res) => {
+    try {
+      const { barbershopId } = req.params;
+      const { serviceId } = req.query as { serviceId?: string };
+
+      if (!serviceId) {
+        return res.status(400).json({ error: "serviceId obrigatório" });
+      }
+
+      const barbershop = await storage.getBarbershop(barbershopId);
+      if (!barbershop) {
+        return res.status(404).json({ error: "Barbearia não encontrada" });
+      }
+
+      const service = await storage.getService(serviceId);
+      if (!service) {
+        return res.status(404).json({ error: "Serviço não encontrado" });
+      }
+
+      const allBarbers = await storage.getBarbers(barbershopId);
+      const eligibleBarbers = allBarbers.filter(b => b.active && (b as any).allowAutoAssign !== false);
+
+      if (eligibleBarbers.length === 0) {
+        return res.status(200).json({ error: "Nenhum profissional disponível para agendamento automático" });
+      }
+
+      const minAdvanceMinutes = Math.round((barbershop.bookingAdvanceHours || 2) * 60);
+      const maxDaysAhead = barbershop.bookingMaxDaysAhead || 30;
+
+      const { summaries } = await getAvailabilitySummaryForBarbers({
+        barbershopId,
+        barbers: eligibleBarbers,
+        serviceDuration: service.duration,
+        minAdvanceMinutes,
+        maxDaysAhead,
+      });
+
+      const withSlots = summaries.filter(s => s.firstSlotTime !== null);
+
+      if (withSlots.length === 0) {
+        return res.status(200).json({ error: "Nenhum profissional disponível no momento" });
+      }
+
+      // Sort: earliest date → earliest time → fewest upcoming appointments
+      const appointmentCounts: Record<string, number> = {};
+      const now = new Date();
+      const farFuture = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+      const allAppts = await storage.getAppointments(barbershopId, now, farFuture);
+      for (const s of withSlots) {
+        appointmentCounts[s.barberId] = allAppts.filter(a =>
+          a.barberId === s.barberId &&
+          (a.status === 'scheduled' || a.status === 'confirmed')
+        ).length;
+      }
+
+      withSlots.sort((a, b) => {
+        if (a.firstSlotDate !== b.firstSlotDate) return a.firstSlotDate < b.firstSlotDate ? -1 : 1;
+        if (a.firstSlotTime !== b.firstSlotTime) return (a.firstSlotTime || '') < (b.firstSlotTime || '') ? -1 : 1;
+        return (appointmentCounts[a.barberId] || 0) - (appointmentCounts[b.barberId] || 0);
+      });
+
+      const best = withSlots[0];
+      const barber = eligibleBarbers.find(b => b.id === best.barberId)!;
+
+      res.json({
+        barberId: barber.id,
+        barberName: barber.name,
+        barberAvatar: barber.avatar,
+        barberRole: barber.role,
+        barberLunchStart: barber.lunchStart,
+        barberLunchEnd: barber.lunchEnd,
+        barberBreakSchedule: barber.breakSchedule,
+        firstSlotDate: best.firstSlotDate,
+        firstSlotTime: best.firstSlotTime,
+      });
     } catch (error: any) {
       res.status(400).json({ error: error.message });
     }
