@@ -104,7 +104,14 @@ let stripeSync: any = null;
 
 export async function getStripeSync() {
   if (!stripeSync) {
-    const { StripeSync } = await import('stripe-replit-sync');
+    if (!process.env.REPLIT_CONNECTORS_HOSTNAME && !process.env.REPL_ID) {
+      throw new Error(
+        "[Stripe] StripeSync só está disponível no Replit. Em produção use STRIPE_SECRET_KEY / webhooks normais."
+      );
+    }
+    // Non-literal specifier: esbuild must not resolve stripe-replit-sync at bundle time (package absent on Railway).
+    const replitSyncId = "stripe-replit" + "-sync";
+    const { StripeSync } = await import(replitSyncId);
     const secretKey = await getStripeSecretKey();
 
     stripeSync = new StripeSync({
