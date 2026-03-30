@@ -7,6 +7,9 @@ export interface TemplateVariables {
   serviceName?: string;
   appointmentDate?: string;
   appointmentTime?: string;
+  // Funil
+  daysAway?: string;
+  daysSince?: string;
 }
 
 const defaultTemplates: Record<NotificationType, string> = {
@@ -58,6 +61,39 @@ Seu agendamento para *{appointmentDate}* às *{appointmentTime}* foi *cancelado*
 Caso queira remarcar, entre em contato conosco ou acesse nossa agenda online.
 
 *{barbershopName}*`,
+
+  reactivation_20days: `Oi {clientName}! 👋
+
+Sentimos sua falta na *{barbershopName}*!
+
+Já faz um tempinho desde o seu último corte. Que tal garantir um horário antes que a agenda encha? 📅
+
+Acesse o link abaixo para agendar:
+👉 _{bookingLink}_`,
+
+  reactivation_30days: `Olá {clientName}! ✂️
+
+Faz um mês que não te vemos por aqui na *{barbershopName}*!
+
+Seu estilo merece atenção. Vamos agendar seu próximo corte? 💈
+
+Acesse o link abaixo ou responda essa mensagem!`,
+
+  reactivation_45days: `{clientName}, sua presença faz falta! 😊
+
+Já tem um tempo que você não visita a *{barbershopName}*.
+
+Temos novidades esperando por você! Que tal voltar a fazer parte da nossa família? 
+
+Responda essa mensagem para agendar ou use nosso link de agendamento online. ✂️`,
+
+  predicted_return: `Olá {clientName}! 💈
+
+Parece que já está quase na hora de alinhar o visual!
+
+Com base no seu histórico, seu próximo corte deve ser em breve. Que tal já garantir seu horário na *{barbershopName}*?
+
+Acesse o link para agendar: 👇`,
 };
 
 export function getTemplate(type: NotificationType, customTemplate?: string): string {
@@ -84,6 +120,11 @@ export function renderTemplate(template: string, variables: TemplateVariables): 
   
   result = result.replace(/{\s*appointmentTime\s*}/g, variables.appointmentTime || '');
   result = result.replace(/{\s*horario\s*}/g, variables.appointmentTime || '');
-  
+
+  // Funil
+  result = result.replace(/{\s*daysAway\s*}/g, variables.daysAway || '');
+  result = result.replace(/{\s*daysSince\s*}/g, variables.daysSince || '');
+  result = result.replace(/{\s*bookingLink\s*}/g, '');
+
   return result;
 }

@@ -786,3 +786,25 @@ export function useDREReport(startDate?: string, endDate?: string) {
     queryFn: () => fetchAPI(`/reports/dre?${params.toString()}`),
   });
 }
+
+// ============ FUNIL DE CLIENTES ============
+
+export function useFunnelStats() {
+  return useQuery({
+    queryKey: ["/clients/funnel"],
+    queryFn: () => fetchAPI("/clients/funnel"),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useRecalculateStats() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetchAPI("/clients/recalculate-stats", { method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/clients/funnel"] });
+      queryClient.invalidateQueries({ queryKey: ["/clients"] });
+    },
+  });
+}

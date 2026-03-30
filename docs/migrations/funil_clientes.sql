@@ -1,0 +1,25 @@
+-- Migration: Funil de Clientes
+-- Data: 05/03/2026
+-- Descrição: Adiciona campos de funil na tabela clients
+
+ALTER TABLE clients
+  ADD COLUMN IF NOT EXISTS first_visit_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS last_visit_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS total_visits INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS total_spent DECIMAL(10,2),
+  ADD COLUMN IF NOT EXISTS average_ticket DECIMAL(10,2),
+  ADD COLUMN IF NOT EXISTS average_visit_interval_days REAL,
+  ADD COLUMN IF NOT EXISTS client_status TEXT NOT NULL DEFAULT 'novo_cliente',
+  ADD COLUMN IF NOT EXISTS plan_offer_eligible BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS last_reactivation_message_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS preferred_barber_id VARCHAR REFERENCES barbers(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS predicted_next_visit TIMESTAMP;
+
+-- Índice para o job diário (busca por last_visit_at)
+CREATE INDEX IF NOT EXISTS idx_clients_last_visit_at ON clients(last_visit_at);
+
+-- Índice para o job preditivo (busca por predicted_next_visit)
+CREATE INDEX IF NOT EXISTS idx_clients_predicted_next_visit ON clients(predicted_next_visit);
+
+-- Índice para filtros por status no dashboard
+CREATE INDEX IF NOT EXISTS idx_clients_client_status ON clients(client_status);

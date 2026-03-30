@@ -3,4 +3,11 @@ export * from './provider-interface';
 export * from './templates';
 export * from './notification-service';
 export * from './scheduler';
-export * from './sender-job';
+export {
+  processPendingMessages,
+  processFunnelJobs,
+  startMessageSenderJob,
+  stopMessageSenderJob,
+  startFunnelJob,
+  stopFunnelJob,
+} from './sender-job';

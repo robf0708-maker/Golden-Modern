@@ -194,3 +194,56 @@ export async function scheduleCancellationMessage(
   });
 }
 
+export async function scheduleFunnelMessage(
+  barbershopId: string,
+  clientId: string,
+  clientPhone: string,
+  clientName: string,
+  type: 'reactivation_20days' | 'reactivation_30days' | 'reactivation_45days' | 'predicted_return',
+  barberName?: string
+): Promise<void> {
+  console.log(`[FunnelScheduler] Agendando mensagem tipo "${type}" para ${clientName} (${clientPhone})`);
+
+  const barbershop = await storage.getBarbershop(barbershopId);
+  if (!barbershop) {
+    console.log(`[FunnelScheduler] Barbearia ${barbershopId} não encontrada, pulando`);
+    return;
+  }
+
+  const settings = await storage.getNotificationSettings(barbershopId);
+
+  const templateMap: Record<string, string | null | undefined> = {
+    reactivation_20days: settings?.reactivation20daysTemplate,
+    reactivation_30days: settings?.reactivation30daysTemplate,
+    reactivation_45days: settings?.reactivation45daysTemplate,
+    predicted_return: settings?.predictedReturnTemplate,
+  };
+
+  const variables: TemplateVariables = {
+    clientName,
+    barbershopName: barbershop.name,
+    barberName,
+  };
+
+  const customTemplate = templateMap[type] || undefined;
+  const template = getTemplate(type as NotificationType, customTemplate);
+  const message = renderTemplate(template, variables);
+
+  await storage.createScheduledMessage({
+    barbershopId,
+    clientId,
+    appointmentId: null,
+    phone: clientPhone,
+    message,
+    type,
+    scheduledFor: getNowAsUtcLocal(),
+    status: 'pending',
+  });
+
+  await storage.updateClient(clientId, {
+    lastReactivationMessageAt: getNowAsUtcLocal(),
+  });
+
+  console.log(`[FunnelScheduler] Mensagem "${type}" agendada para ${clientName}`);
+}
+

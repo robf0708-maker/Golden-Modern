@@ -4,7 +4,7 @@ import { normalizePhone, phoneForProvider } from '../utils/phone';
 class ConsoleProvider implements MessageProvider {
   name = 'console';
 
-  async send(payload: MessagePayload): Promise<MessageResult> {
+  async send(payload: MessagePayload, _instanceToken?: string): Promise<MessageResult> {
     console.log(`[WhatsApp Mock] Enviando para ${payload.to}: ${payload.message}`);
     return { success: true, messageId: `mock-${Date.now()}` };
   }
@@ -24,8 +24,9 @@ class UazAPIProvider implements MessageProvider {
     this.instanceToken = process.env.UAZAPI_INSTANCE_TOKEN || '';
   }
 
-  async send(payload: MessagePayload): Promise<MessageResult> {
-    if (!this.isConfigured()) {
+  async send(payload: MessagePayload, instanceToken?: string): Promise<MessageResult> {
+    const token = instanceToken ?? this.instanceToken;
+    if (!this.apiUrl || !token) {
       return { success: false, error: 'UazAPI não configurada' };
     }
 
@@ -44,7 +45,7 @@ class UazAPIProvider implements MessageProvider {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'token': this.instanceToken,
+          'token': token,
         },
         body: JSON.stringify({
           number: phone,
@@ -88,7 +89,7 @@ class EvolutionAPIProvider implements MessageProvider {
     this.instance = process.env.EVOLUTION_INSTANCE || '';
   }
 
-  async send(payload: MessagePayload): Promise<MessageResult> {
+  async send(payload: MessagePayload, _instanceToken?: string): Promise<MessageResult> {
     if (!this.isConfigured()) {
       return { success: false, error: 'Evolution API não configurada' };
     }
@@ -136,7 +137,7 @@ class TwilioProvider implements MessageProvider {
     this.fromNumber = process.env.TWILIO_WHATSAPP_FROM || '';
   }
 
-  async send(payload: MessagePayload): Promise<MessageResult> {
+  async send(payload: MessagePayload, _instanceToken?: string): Promise<MessageResult> {
     if (!this.isConfigured()) {
       return { success: false, error: 'Twilio não configurado' };
     }

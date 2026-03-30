@@ -108,19 +108,17 @@ export default function Clients() {
   const clientsWithMetrics = useMemo(() => {
     return clients.map((client: any) => {
       const packages = getClientActivePackages(client.id);
-      const comandasForClient = clientPackages.filter((cp: any) => cp.clientId === client.id);
-      
-      let lastVisit: Date | null = null;
-      let totalSpent = 0;
       
       return {
         ...client,
         activePackages: packages,
         hasActivePackages: packages.length > 0,
-        totalPackageUses: packages.reduce((acc: number, p: any) => acc + p.quantityRemaining, 0),
-        lastVisit,
-        totalSpent,
-        isInactive: false
+        totalPackageUses: packages.reduce((acc: number, p: any) => acc + (p.quantityRemaining || 0), 0),
+        lastVisit: client.lastVisitAt ? new Date(client.lastVisitAt) : null,
+        totalSpent: parseFloat(client.totalSpent || '0'),
+        isInactive: client.clientStatus === 'cliente_inativo',
+        clientStatus: client.clientStatus || 'novo_cliente',
+        totalVisits: client.totalVisits || 0,
       };
     });
   }, [clients, clientPackages]);
@@ -132,10 +130,26 @@ export default function Clients() {
       const daysToExpire = differenceInDays(new Date(cp.expiresAt), new Date());
       return daysToExpire <= 7 && daysToExpire > 0 && cp.quantityRemaining > 0;
     }).length;
-    const inactive = 0;
+    const inactive = clientsWithMetrics.filter((c: any) => c.isInactive).length;
 
     return { total, withPackages, expiringPackages, inactive };
   }, [clientsWithMetrics, clientPackages]);
+
+  const getStatusBadge = (status: string) => {
+    const map: Record<string, { label: string; className: string }> = {
+      novo_cliente:      { label: 'Novo',       className: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
+      cliente_ativo:     { label: 'Ativo',      className: 'bg-green-500/20 text-green-400 border-green-500/30' },
+      cliente_recorrente: { label: 'Recorrente', className: 'bg-purple-500/20 text-purple-400 border-purple-500/30' },
+      cliente_plano:     { label: 'Plano',      className: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' },
+      cliente_inativo:   { label: 'Inativo',    className: 'bg-red-500/20 text-red-400 border-red-500/30' },
+    };
+    const s = map[status] || map['novo_cliente'];
+    return (
+      <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${s.className}`}>
+        {s.label}
+      </span>
+    );
+  };
 
   const filteredClients = useMemo(() => {
     let result = clientsWithMetrics;
@@ -361,6 +375,8 @@ export default function Clients() {
                   <TableHead>Contato</TableHead>
                   <TableHead>Pacotes</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Visitas</TableHead>
+                  <TableHead>Última visita</TableHead>
                   <TableHead className="w-[50px]"></TableHead>
                 </TableRow>
               </TableHeader>
@@ -407,9 +423,16 @@ export default function Clients() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="secondary" className="bg-green-500/10 text-green-500 border-green-500/30">
-                        Ativo
-                      </Badge>
+                      {getStatusBadge(client.clientStatus)}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      {client.totalVisits}
+                    </TableCell>
+                    <TableCell>
+                      {client.lastVisit 
+                        ? format(client.lastVisit, "dd/MM/yyyy", { locale: ptBR })
+                        : <span className="text-muted-foreground text-xs">—</span>
+                      }
                     </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>

@@ -1,9 +1,11 @@
 import { storage } from '../storage';
 import { getProvider } from './provider-interface';
 import { getNowAsUtcLocal } from '../utils/timezone';
+import { scheduleFunnelMessage } from './scheduler';
 
 let isRunning = false;
 let intervalId: NodeJS.Timeout | null = null;
+let funnelJobIntervalId: NodeJS.Timeout | null = null;
 
 export async function processPendingMessages(): Promise<void> {
   if (isRunning) return;
@@ -26,10 +28,11 @@ export async function processPendingMessages(): Promise<void> {
           continue;
         }
 
-        const result = await provider.send({
-          to: message.phone,
-          message: message.message,
-        });
+        const chatbotConfig = await storage.getChatbotSettings(message.barbershopId);
+        const result = await provider.send(
+          { to: message.phone, message: message.message },
+          chatbotConfig?.uazapiInstanceToken ?? undefined
+        );
 
         if (result.success) {
           await storage.updateScheduledMessage(message.id, {
@@ -66,6 +69,123 @@ export async function processPendingMessages(): Promise<void> {
     console.error('[MessageSender] Erro ao buscar mensagens pendentes:', error);
   } finally {
     isRunning = false;
+  }
+}
+
+export async function processFunnelJobs(): Promise<void> {
+  console.log('[FunnelJob] Iniciando job diário do funil...');
+
+  try {
+    const allClients = await storage.getAllClientsForFunnelJob();
+    const now = getNowAsUtcLocal();
+    let processed = 0;
+    let messagesScheduled = 0;
+    const settingsCache = new Map<string, any>();
+
+    for (const client of allClients) {
+      try {
+        processed++;
+
+        if (!client.lastVisitAt) continue;
+
+        const days = client.daysSinceVisit;
+
+        if (days > 30 && client.clientStatus !== 'cliente_plano') {
+          await storage.updateClient(client.id, { clientStatus: 'cliente_inativo' });
+        }
+
+        if (!settingsCache.has(client.barbershopId)) {
+          settingsCache.set(client.barbershopId, await storage.getNotificationSettings(client.barbershopId));
+        }
+        const settings = settingsCache.get(client.barbershopId);
+
+        const lastMsgAt = client.lastReactivationMessageAt;
+        const lastMsgDaysAgo = lastMsgAt
+          ? (now.getTime() - new Date(lastMsgAt).getTime()) / (1000 * 60 * 60 * 24)
+          : null;
+
+        const alreadySentRecently = lastMsgDaysAgo !== null && lastMsgDaysAgo < 8;
+
+        if (!alreadySentRecently) {
+          if (days >= 20 && days < 30 && lastMsgAt === null && (settings?.reactivation20daysEnabled ?? true)) {
+            await scheduleFunnelMessage(
+              client.barbershopId,
+              client.id,
+              client.phone,
+              client.name,
+              'reactivation_20days'
+            );
+            messagesScheduled++;
+          } else if (days >= 30 && days < 45 && lastMsgDaysAgo !== null && lastMsgDaysAgo >= 8 && (settings?.reactivation30daysEnabled ?? true)) {
+            await scheduleFunnelMessage(
+              client.barbershopId,
+              client.id,
+              client.phone,
+              client.name,
+              'reactivation_30days'
+            );
+            messagesScheduled++;
+          } else if (days >= 45 && lastMsgDaysAgo !== null && lastMsgDaysAgo >= 8 && (settings?.reactivation45daysEnabled ?? true)) {
+            await scheduleFunnelMessage(
+              client.barbershopId,
+              client.id,
+              client.phone,
+              client.name,
+              'reactivation_45days'
+            );
+            messagesScheduled++;
+          }
+        }
+
+        if (client.daysUntilPredictedVisit !== null && (settings?.predictedReturnEnabled ?? true)) {
+          const daysUntil = client.daysUntilPredictedVisit;
+
+          if (daysUntil >= 0 && daysUntil <= 3) {
+            const predictiveSentRecently = lastMsgDaysAgo !== null && lastMsgDaysAgo < 3;
+            if (!predictiveSentRecently) {
+              await scheduleFunnelMessage(
+                client.barbershopId,
+                client.id,
+                client.phone,
+                client.name,
+                'predicted_return'
+              );
+              messagesScheduled++;
+            }
+          }
+        }
+      } catch (clientError) {
+        console.error(`[FunnelJob] Erro ao processar cliente ${client.id}:`, clientError);
+      }
+    }
+
+    console.log(`[FunnelJob] Concluído: ${processed} clientes processados, ${messagesScheduled} mensagens agendadas`);
+  } catch (error) {
+    console.error('[FunnelJob] Erro geral no job do funil:', error);
+  }
+}
+
+export function startFunnelJob(): void {
+  if (funnelJobIntervalId) {
+    console.log('[FunnelJob] Job do funil já está rodando');
+    return;
+  }
+
+  processFunnelJobs();
+
+  const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+  funnelJobIntervalId = setInterval(async () => {
+    await processFunnelJobs();
+  }, TWENTY_FOUR_HOURS);
+
+  console.log('[FunnelJob] Job diário do funil iniciado (intervalo: 24h)');
+}
+
+export function stopFunnelJob(): void {
+  if (funnelJobIntervalId) {
+    clearInterval(funnelJobIntervalId);
+    funnelJobIntervalId = null;
+    console.log('[FunnelJob] Job do funil parado');
   }
 }
 

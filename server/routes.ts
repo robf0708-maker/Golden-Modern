@@ -1,5 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
+import fs from "fs";
+import path from "path";
 import { storage } from "./storage";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
@@ -524,6 +526,34 @@ export async function registerRoutes(
       res.json(client);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Funil de Clientes (rotas específicas devem vir antes de /:id)
+  app.get("/api/clients/funnel", requireAuth, async (req, res) => {
+    try {
+      const barbershopId = req.session.barbershopId!;
+      const stats = await storage.getClientsFunnelStats(barbershopId);
+      res.json(stats);
+    } catch (error: any) {
+      console.error('[Funil] Erro ao buscar stats do funil:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/clients/recalculate-stats", requireAuth, async (req, res) => {
+    try {
+      const barbershopId = req.session.barbershopId!;
+      console.log(`[Funil] Iniciando recálculo de todos os clientes da barbearia ${barbershopId}`);
+      const result = await storage.recalculateAllClientsStats(barbershopId);
+      res.json({
+        success: true,
+        message: `Recálculo concluído: ${result.updated} clientes atualizados, ${result.errors} erros`,
+        ...result,
+      });
+    } catch (error: any) {
+      console.error('[Funil] Erro ao recalcular stats:', error);
+      res.status(500).json({ error: error.message });
     }
   });
 
@@ -1722,6 +1752,17 @@ export async function registerRoutes(
         endTime: req.body.endTime ? new Date(req.body.endTime) : undefined,
       };
       const appointment = await storage.updateAppointment(req.params.id, body);
+
+      // Atualizar funil quando agendamento for concluído diretamente
+      if (body.status === 'completed' && appointment?.clientId) {
+        try {
+          await storage.updateClientFunnelData(appointment.clientId, req.session.barbershopId!);
+          console.log(`[Funil] Dados do cliente ${appointment.clientId} atualizados após conclusão de agendamento`);
+        } catch (funnelError) {
+          console.error('[Funil] Erro ao atualizar dados do cliente:', funnelError);
+        }
+      }
+
       res.json(appointment);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -2168,6 +2209,16 @@ export async function registerRoutes(
           await storage.updateAppointment(comandaBody.appointmentId, { status: 'completed' });
         }
       }
+
+      // Atualizar funil do cliente após fechar comanda (POST - comanda criada já fechada)
+      if (comandaBody.status === 'closed' && comandaBody.clientId) {
+        try {
+          await storage.updateClientFunnelData(comandaBody.clientId, req.session.barbershopId!);
+          console.log(`[Funil] Dados do cliente ${comandaBody.clientId} atualizados após fechamento de comanda`);
+        } catch (funnelError) {
+          console.error('[Funil] Erro ao atualizar dados do cliente:', funnelError);
+        }
+      }
       
       // Baixa de estoque para produtos - apenas quando comanda é fechada
       if (comandaBody.status === 'closed' && items && Array.isArray(items)) {
@@ -2316,6 +2367,24 @@ export async function registerRoutes(
       
       const comanda = await storage.updateComanda(req.params.id, req.body);
       
+      // Marcar agendamento como concluído e atualizar funil - quando comanda é fechada
+      if (isClosing) {
+        if (comanda?.appointmentId) {
+          const appt = await storage.getAppointment(comanda.appointmentId);
+          if (appt && appt.barbershopId === req.session.barbershopId) {
+            await storage.updateAppointment(comanda.appointmentId, { status: 'completed' });
+          }
+        }
+        if (comanda?.clientId) {
+          try {
+            await storage.updateClientFunnelData(comanda.clientId, req.session.barbershopId!);
+            console.log(`[Funil] Dados do cliente ${comanda.clientId} atualizados após fechamento de comanda`);
+          } catch (funnelError) {
+            console.error('[Funil] Erro ao atualizar dados do cliente:', funnelError);
+          }
+        }
+      }
+
       // Baixa de estoque para produtos - apenas quando comanda é fechada
       if (isClosing) {
         const items = await storage.getComandaItems(req.params.id);
@@ -2580,7 +2649,7 @@ export async function registerRoutes(
 
       await storage.refundComandaTransaction(req.params.id, comanda, items, commissions, barbershopId);
 
-      for (const barberId of barberIds) {
+      for (const barberId of Array.from(barberIds)) {
         await storage.createRefundNotification({
           barbershopId,
           barberId,
@@ -3826,6 +3895,10 @@ export async function registerRoutes(
           minAdvanceMinutes: 60,
           maxDaysAhead: 30,
           webhookToken: null,
+          uazapiInstanceToken: null,
+          uazapiInstanceName: null,
+          whatsappConnected: false,
+          whatsappPhone: null,
         });
       }
       res.json(settings);
@@ -3850,8 +3923,8 @@ export async function registerRoutes(
         noAvailabilityPrompt: z.string().optional().nullable(),
         waitingOptionEnabled: z.boolean().default(true),
         waitingPrompt: z.string().optional().nullable(),
-        minAdvanceMinutes: z.number().default(60),
-        maxDaysAhead: z.number().default(30),
+        minAdvanceMinutes: z.coerce.number().default(60),
+        maxDaysAhead: z.coerce.number().default(30),
         webhookToken: z.string().optional().nullable(),
       });
 
@@ -3864,7 +3937,470 @@ export async function registerRoutes(
 
       res.json(settings);
     } catch (error: any) {
+      console.error('[Chatbot] Erro ao salvar configurações:', error.message);
       res.status(400).json({ error: error.message });
+    }
+  });
+
+  // ============ WHATSAPP MULTI-INSTÂNCIA (UazAPI) ============
+
+  // Helper: extrai status de resposta do uazapiGO
+  // Suporta os formatos: { status: { connected } } e { connected } e { instance: { status: "connected" } }
+  function parseUazStatus(d: any): { connected: boolean; phone: string | null } {
+    // Formato uazapiGO: { instance: {...}, status: { connected: bool, jid, loggedIn } }
+    if (d?.status && typeof d.status === 'object' && 'connected' in d.status) {
+      const connected = !!d.status.connected || !!d.status.loggedIn;
+      const instanceStatus = d.instance?.status || '';
+      const isConnected = connected || instanceStatus === 'connected' || instanceStatus === 'open';
+      const phone = d.instance?.owner || (d.status?.jid ? String(d.status.jid).split('@')[0] : null) || null;
+      return { connected: !!isConnected, phone };
+    }
+    // Formato alternativo: { connected: bool, phone: string }
+    if ('connected' in d) {
+      const statusStr = d.status || '';
+      return {
+        connected: !!d.connected || statusStr === 'connected' || statusStr === 'open',
+        phone: d.phone || null,
+      };
+    }
+    // Formato { data: { connected } }
+    if (d?.data && 'connected' in d.data) {
+      return { connected: !!d.data.connected, phone: d.data.phone || null };
+    }
+    return { connected: false, phone: null };
+  }
+
+  // Helper: verifica status real da instância no UazAPI
+  async function checkUazStatus(apiUrl: string, instanceToken: string, instanceName: string): Promise<{ connected: boolean; phone: string | null } | null> {
+    const encoded = encodeURIComponent(instanceName);
+    // 1) GET /instance/status (token no header identifica a instância — uazapiGO)
+    try {
+      const r = await fetch(`${apiUrl}/instance/status`, { headers: { 'token': instanceToken } });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) return parseUazStatus(d);
+    } catch { /* continua */ }
+    // 2) GET /instance/status/{name}
+    try {
+      const r = await fetch(`${apiUrl}/instance/status/${encoded}`, { headers: { 'token': instanceToken } });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) return parseUazStatus(d);
+    } catch { /* continua */ }
+    // 3) GET /instance/{name}
+    try {
+      const r = await fetch(`${apiUrl}/instance/${encoded}`, { headers: { 'token': instanceToken } });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) return parseUazStatus(d);
+    } catch { /* continua */ }
+    return null;
+  }
+
+  // Helper: extrai QR code de resposta da UazAPI (apenas strings não vazias)
+  // Suporta uazapiGO: { instance: { qrcode: "..." } } e formatos alternativos
+  function extractQrcode(data: any): string | null {
+    const candidates = [
+      data?.instance?.qrcode,  // uazapiGO format
+      data?.qrcode,
+      data?.data?.qrcode,
+      data?.base64,
+      data?.qr,
+    ];
+    for (const c of candidates) {
+      if (c && typeof c === 'string' && c.trim().length > 10) return c.trim();
+    }
+    return null;
+  }
+
+  app.post("/api/whatsapp/connect", requireAuth, async (req, res) => {
+    try {
+      const barbershopId = req.session.barbershopId!;
+      const apiUrl = (process.env.UAZAPI_URL || '').replace(/\/+$/, '');
+      const masterToken = (process.env.UAZAPI_MASTER_TOKEN || '').trim();
+      if (!apiUrl || !masterToken) {
+        return res.status(500).json({ error: "UAZAPI_URL e UAZAPI_MASTER_TOKEN devem estar configurados" });
+      }
+      const instanceName = `barbergold-${barbershopId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+      let instanceToken: string | null = null;
+
+      // Reutilizar instância existente se já tivermos no banco (evita estourar limite)
+      const settings = await storage.getChatbotSettings(barbershopId);
+      if (settings?.uazapiInstanceName === instanceName && settings?.uazapiInstanceToken) {
+        instanceToken = settings.uazapiInstanceToken;
+      }
+
+      if (!instanceToken) {
+        const createRes = await fetch(`${apiUrl}/instance/init`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'admintoken': masterToken,
+            'apikey': masterToken,
+          },
+          body: JSON.stringify({ name: instanceName }),
+        });
+        const createData = await createRes.json().catch(() => ({}));
+        if (!createRes.ok) {
+          const errStr = String(createData?.message || createData?.error || '').toLowerCase();
+          const isMaxReached = errStr.includes('maximum') || errStr.includes('max') || errStr.includes('limit') || errStr.includes('limite');
+          if (isMaxReached) {
+            const listRes = await fetch(`${apiUrl}/instance`, { headers: { 'admintoken': masterToken } });
+            const listData = await listRes.json().catch(() => ({}));
+            const arr = Array.isArray(listData) ? listData : (listData?.data || listData?.instances || listData?.list || []);
+            const existing = Array.isArray(arr) && arr.find((i: any) => (i.name || i.instanceName) === instanceName);
+            const tok = existing?.apikey || existing?.token || existing?.instanceToken || existing?.data?.token;
+            if (tok) {
+              instanceToken = tok;
+              await storage.updateChatbotWhatsappFields(barbershopId, {
+                uazapiInstanceName: instanceName,
+                uazapiInstanceToken: instanceToken,
+                whatsappConnected: existing?.connected ?? false,
+                whatsappPhone: existing?.phone ?? null,
+              });
+              console.log('[WhatsApp] Reutilizando instância existente:', instanceName);
+            } else {
+              console.error('[WhatsApp] Limite atingido, instância não encontrada na lista:', listData);
+              return res.status(400).json({ error: 'Limite de instâncias atingido. Exclua uma instância no painel UazAPI e tente novamente.' });
+            }
+          } else {
+            console.error('[WhatsApp] Erro ao criar instância:', createRes.status, createData);
+            const errMsg = createData?.message || createData?.error || (createRes.status === 401 ? 'Token inválido. Verifique o UAZAPI_MASTER_TOKEN.' : 'Falha ao criar instância');
+            return res.status(createRes.status).json({ error: errMsg });
+          }
+        } else {
+          instanceToken = createData.token || createData.instanceToken || createData.data?.token || createData.apikey;
+          if (!instanceToken) {
+            console.error('[WhatsApp] Resposta sem token:', createData);
+            return res.status(500).json({ error: 'Resposta da API sem token da instância' });
+          }
+          await storage.updateChatbotWhatsappFields(barbershopId, {
+            uazapiInstanceName: instanceName,
+            uazapiInstanceToken: instanceToken,
+            whatsappConnected: false,
+            whatsappPhone: null,
+          });
+        }
+      }
+
+      // Checar status ANTES de tentar QR — se já conectado, sincroniza DB e retorna
+      const statusCheck = await checkUazStatus(apiUrl, instanceToken!, instanceName);
+      if (statusCheck?.connected) {
+        console.log('[WhatsApp] Instância já conectada, sincronizando DB:', instanceName);
+        await storage.updateChatbotWhatsappFields(barbershopId, {
+          uazapiInstanceName: instanceName,
+          uazapiInstanceToken: instanceToken!,
+          whatsappConnected: true,
+          whatsappPhone: statusCheck.phone,
+        });
+        return res.json({ connected: true, qrcode: null, phone: statusCheck.phone, instanceName });
+      }
+
+      // Instância não conectada — obter QR code para o admin escanear
+      // IMPORTANTE: usar GET /instance/qrcode (sem instanceName no path) — token identifica a instância
+      let qrcode: string | null = null;
+      const encodedInstanceName = encodeURIComponent(instanceName);
+
+      // 1) GET /instance/qrcode (sem path params — token identifica instância)
+      try {
+        const r = await fetch(`${apiUrl}/instance/qrcode`, { headers: { 'token': instanceToken! } });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) qrcode = extractQrcode(d);
+      } catch { /* continua */ }
+
+      // 2) GET /instance/qrcode/{instanceName}
+      if (!qrcode) {
+        try {
+          const r = await fetch(`${apiUrl}/instance/qrcode/${encodedInstanceName}`, { headers: { 'token': instanceToken! } });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok) qrcode = extractQrcode(d);
+        } catch { /* continua */ }
+      }
+
+      // 3) POST /instance/connect com body vazio (token no header identifica instância)
+      if (!qrcode) {
+        try {
+          const r = await fetch(`${apiUrl}/instance/connect`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'token': instanceToken! },
+            body: JSON.stringify({}),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok) qrcode = extractQrcode(d);
+        } catch { /* continua */ }
+      }
+
+      console.log('[WhatsApp] connect result — qrcode:', qrcode ? 'sim' : 'não', 'instance:', instanceName);
+      res.json({ qrcode: qrcode || null, connected: false, instanceName });
+    } catch (error: any) {
+      console.error('[WhatsApp] Erro connect:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Conectar usando instância criada manualmente no painel UazAPI (bypass do limite)
+  app.post("/api/whatsapp/connect-manual", requireAuth, async (req, res) => {
+    try {
+      const barbershopId = req.session.barbershopId!;
+      const { instanceName, instanceToken } = req.body || {};
+      if (!instanceName || !instanceToken) {
+        return res.status(400).json({ error: "Informe o nome e o token da instância criada no painel UazAPI." });
+      }
+      const apiUrl = (process.env.UAZAPI_URL || '').replace(/\/+$/, '');
+      if (!apiUrl) {
+        return res.status(500).json({ error: "UAZAPI_URL não configurado." });
+      }
+      const name = String(instanceName).trim();
+      const token = String(instanceToken).trim();
+      const headersToken = { 'Content-Type': 'application/json', 'token': token };
+      const encodedName = encodeURIComponent(name);
+      let qrcode: string | null = null;
+
+      // Tentar vários endpoints (mesma lógica do connect automático)
+      const connectRes = await fetch(`${apiUrl}/instance/connect`, {
+        method: 'POST',
+        headers: headersToken,
+        body: JSON.stringify({ instanceName: name, name }),
+      });
+      const connectData = await connectRes.json().catch(() => ({}));
+      qrcode = connectData.qrcode || connectData.data?.qrcode || connectData.base64 || null;
+
+      if (!qrcode) {
+        const qrRes = await fetch(`${apiUrl}/instance/qrcode/${encodedName}`, { headers: { token } });
+        const qrData = await qrRes.json().catch(() => ({}));
+        if (qrRes.ok) qrcode = qrData.qrcode || qrData.data?.qrcode || qrData.base64 || qrData.qr || null;
+      }
+      if (!qrcode) {
+        const altRes = await fetch(`${apiUrl}/instance/${encodedName}/qrcode`, { headers: { token } });
+        const altData = await altRes.json().catch(() => ({}));
+        if (altRes.ok) qrcode = altData.qrcode || altData.data?.qrcode || altData.base64 || altData.qr || null;
+      }
+      if (!qrcode) {
+        const fallbackRes = await fetch(`${apiUrl}/instance/connect`, {
+          method: 'POST',
+          headers: headersToken,
+          body: JSON.stringify({}),
+        });
+        const fallbackData = await fallbackRes.json().catch(() => ({}));
+        qrcode = fallbackData.qrcode || fallbackData.data?.qrcode || fallbackData.base64 || null;
+      }
+      if (!qrcode && (connectRes.status >= 400 || (connectData?.message || connectData?.error))) {
+        const errMsg = connectData?.message || connectData?.error || `Falha ao obter QR code`;
+        return res.status(connectRes.ok ? 400 : connectRes.status).json({ error: errMsg });
+      }
+      await storage.updateChatbotWhatsappFields(barbershopId, {
+        uazapiInstanceName: name,
+        uazapiInstanceToken: token,
+        whatsappConnected: false,
+        whatsappPhone: null,
+      });
+      res.json({ qrcode: qrcode || null, instanceName: name });
+    } catch (error: any) {
+      console.error('[WhatsApp] Erro connect-manual:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/whatsapp/panel-url", requireAuth, (req, res) => {
+    const url = (process.env.UAZAPI_URL || '').replace(/\/+$/, '') || 'https://uazapi.com';
+    res.json({ panelUrl: url });
+  });
+
+  app.get("/api/whatsapp/qrcode", requireAuth, async (req, res) => {
+    try {
+      const barbershopId = req.session.barbershopId!;
+      const settings = await storage.getChatbotSettings(barbershopId);
+      if (!settings?.uazapiInstanceName) {
+        return res.status(400).json({ error: "Nenhuma instância conectada. Clique em Conectar primeiro." });
+      }
+      const instanceToken = settings.uazapiInstanceToken;
+      const apiUrl = (process.env.UAZAPI_URL || '').replace(/\/+$/, '');
+      if (!apiUrl || !instanceToken) {
+        return res.status(400).json({ error: "Configuração incompleta. Clique em Conectar para reiniciar." });
+      }
+      const encodedName = encodeURIComponent(settings.uazapiInstanceName);
+      const instanceName = settings.uazapiInstanceName;
+
+      // Antes de buscar QR, verificar se a instância já está conectada
+      const statusCheck = await checkUazStatus(apiUrl, instanceToken, instanceName);
+      if (statusCheck?.connected) {
+        console.log('[WhatsApp] Instância já conectada (polling QR), sincronizando DB:', instanceName);
+        await storage.updateChatbotWhatsappFields(barbershopId, {
+          whatsappConnected: true,
+          whatsappPhone: statusCheck.phone,
+        });
+        return res.json({ connected: true, qrcode: null, phone: statusCheck.phone });
+      }
+
+      // Instância desconectada — obter QR code para o admin escanear
+      let qrcode: string | null = null;
+      let lastError: string | null = null;
+
+      // uazapiGO: o QR code fica em instance.qrcode no GET /instance/status
+      // Se estiver vazio, chamar POST /instance/connect para iniciar a sessão e gerar o QR
+      // IMPORTANTE: usar body vazio no POST — não passar instanceName para evitar erro de limite
+
+      // 1) GET /instance/status — verifica se já tem QR pronto no campo instance.qrcode
+      try {
+        const r = await fetch(`${apiUrl}/instance/status`, { headers: { 'token': instanceToken } });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) {
+          qrcode = extractQrcode(d);
+          // Se status for 'connecting' e tiver QR, usar direto
+          if (qrcode) console.log('[WhatsApp] QR obtido via GET /instance/status');
+        }
+      } catch { /* continua */ }
+
+      // 2) POST /instance/connect (body vazio — token no header identifica instância)
+      // Isso inicia a sessão e retorna o QR code gerado
+      if (!qrcode) {
+        try {
+          const r = await fetch(`${apiUrl}/instance/connect`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'token': instanceToken },
+            body: JSON.stringify({}),
+          });
+          const d = await r.json().catch(() => ({}));
+          console.log('[WhatsApp] POST /instance/connect:', r.status, JSON.stringify(d).slice(0, 200));
+          if (r.ok) {
+            qrcode = extractQrcode(d);
+          } else {
+            const errStr = String(d?.message || d?.error || '').toLowerCase();
+            // "Maximum number of instances connected" = instância já está conectada no WhatsApp
+            // Ocorre quando o logout não funcionou ou a sessão ainda está ativa
+            if (errStr.includes('maximum') || errStr.includes('limit') || r.status === 429) {
+              console.log('[WhatsApp] Instância reportada como conectada pelo UazAPI — sincronizando DB');
+              const recheck = await checkUazStatus(apiUrl, instanceToken, instanceName);
+              const phone = recheck?.phone || settings.whatsappPhone || null;
+              await storage.updateChatbotWhatsappFields(barbershopId, {
+                whatsappConnected: true,
+                whatsappPhone: phone,
+              });
+              return res.json({ connected: true, qrcode: null, phone });
+            }
+            lastError = d?.message || d?.error || `POST connect: ${r.status}`;
+          }
+        } catch { /* continua */ }
+      }
+
+      // 3) Após POST /instance/connect, buscar QR no GET /instance/status (pode demorar ~1s para gerar)
+      if (!qrcode) {
+        await new Promise(r => setTimeout(r, 1200));
+        try {
+          const r = await fetch(`${apiUrl}/instance/status`, { headers: { 'token': instanceToken } });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok) qrcode = extractQrcode(d);
+        } catch { /* continua */ }
+      }
+
+      if (!qrcode) {
+        console.error('[WhatsApp] QR não disponível:', lastError, 'instance:', instanceName);
+        return res.status(400).json({ error: lastError || "QR não disponível. A instância pode estar desconectada ou o token inválido." });
+      }
+      res.json({ qrcode });
+    } catch (error: any) {
+      console.error('[WhatsApp] Erro qrcode:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/whatsapp/status", requireAuth, async (req, res) => {
+    try {
+      const barbershopId = req.session.barbershopId!;
+      const settings = await storage.getChatbotSettings(barbershopId);
+      if (!settings?.uazapiInstanceName) {
+        return res.json({ connected: false, phone: null });
+      }
+      const apiUrl = (process.env.UAZAPI_URL || '').replace(/\/+$/, '');
+      const instanceToken = settings.uazapiInstanceToken || process.env.UAZAPI_INSTANCE_TOKEN;
+      if (!apiUrl || !instanceToken) {
+        return res.json({ connected: settings.whatsappConnected ?? false, phone: settings.whatsappPhone ?? null });
+      }
+      const statusCheck = await checkUazStatus(apiUrl, instanceToken, settings.uazapiInstanceName);
+      if (statusCheck) {
+        // Sincronizar DB se o status mudou
+        if (statusCheck.connected !== (settings.whatsappConnected ?? false)) {
+          await storage.updateChatbotWhatsappFields(barbershopId, {
+            whatsappConnected: statusCheck.connected,
+            whatsappPhone: statusCheck.phone || settings.whatsappPhone || null,
+          });
+        }
+        return res.json({ connected: statusCheck.connected, phone: statusCheck.phone || settings.whatsappPhone || null });
+      }
+      // Fallback ao valor do banco
+      res.json({ connected: settings.whatsappConnected ?? false, phone: settings.whatsappPhone ?? null });
+    } catch (error: any) {
+      console.error('[WhatsApp] Erro status:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/whatsapp/disconnect", requireAuth, async (req, res) => {
+    try {
+      const barbershopId = req.session.barbershopId!;
+      const settings = await storage.getChatbotSettings(barbershopId);
+      if (!settings?.uazapiInstanceName) {
+        return res.json({ success: true });
+      }
+      const apiUrl = (process.env.UAZAPI_URL || '').replace(/\/+$/, '');
+      const instanceToken = settings.uazapiInstanceToken;
+
+      // Faz logout do celular — NÃO exclui a instância no UazAPI
+      // Isso preserva a instância para reconexão futura sem criar novas
+      if (apiUrl && instanceToken) {
+        const encoded = encodeURIComponent(settings.uazapiInstanceName);
+        const headers = { 'Content-Type': 'application/json', 'token': instanceToken };
+        let logoutOk = false;
+
+        // Tentar diferentes endpoints de logout do uazapiGO
+        const logoutEndpoints = [
+          { method: 'POST', url: `${apiUrl}/instance/logout` },
+          { method: 'DELETE', url: `${apiUrl}/instance/logout` },
+          { method: 'POST', url: `${apiUrl}/instance/logout/${encoded}` },
+          { method: 'GET', url: `${apiUrl}/instance/logout` },
+        ];
+
+        for (const ep of logoutEndpoints) {
+          try {
+            const r = await fetch(ep.url, {
+              method: ep.method,
+              headers,
+              ...(ep.method !== 'GET' ? { body: JSON.stringify({}) } : {}),
+            });
+            const d = await r.json().catch(() => ({}));
+            console.log(`[WhatsApp] ${ep.method} ${ep.url}:`, r.status, JSON.stringify(d).slice(0, 100));
+            if (r.ok || r.status === 200) { logoutOk = true; break; }
+          } catch { /* continua */ }
+        }
+        if (!logoutOk) {
+          console.warn('[WhatsApp] Nenhum endpoint de logout funcionou — status atualizado apenas no DB');
+        }
+      }
+
+      // Atualiza apenas o status de conexão — mantém instanceName e instanceToken para reutilização
+      await storage.updateChatbotWhatsappFields(barbershopId, {
+        whatsappConnected: false,
+        whatsappPhone: null,
+      });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[WhatsApp] Erro disconnect:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/webhook/whatsapp-status/:barbershopId", async (req, res) => {
+    try {
+      const { barbershopId } = req.params;
+      const body = req.body;
+      const barbershop = await storage.getBarbershop(barbershopId);
+      if (!barbershop) return res.status(404).json({ error: 'Barbershop not found' });
+      const phone = body.phone ?? body.data?.phone ?? body.sender ?? body.number ?? null;
+      await storage.updateChatbotWhatsappFields(barbershopId, {
+        whatsappConnected: true,
+        whatsappPhone: phone ? String(phone).replace(/\D/g, '').replace(/^0/, '') : null,
+      });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[WhatsApp] Erro webhook-status:', error);
+      res.status(500).json({ error: error.message });
     }
   });
 
@@ -4027,10 +4563,11 @@ export async function registerRoutes(
       // Fallback para mensagens não-texto (áudio, imagem, sticker, etc)
       if (!message) {
         console.log('[Webhook] Mensagem não-texto detectada (áudio, imagem, sticker, etc). Respondendo pedindo texto.');
+        const chatbotConfig = await storage.getChatbotSettings(barbershopId);
         const notifSettings = await storage.getNotificationSettings(barbershopId);
         const fallbackProvider = getProvider(notifSettings?.provider);
         const fallbackMsg = "Desculpe, só consigo entender mensagens de texto. 📝 Poderia digitar o que precisa, por favor?";
-        await fallbackProvider.send({ to: phone, message: fallbackMsg });
+        await fallbackProvider.send({ to: phone, message: fallbackMsg }, chatbotConfig?.uazapiInstanceToken ?? undefined);
         return res.json({ success: true, handled: true, reason: 'non_text_message_fallback' });
       }
 
@@ -4050,14 +4587,15 @@ export async function registerRoutes(
 
       // Send response via configured provider with fallback
       if (response.message && !response.shouldEndConversation) {
+        const chatbotConfig = await storage.getChatbotSettings(barbershopId);
         const settings = await storage.getNotificationSettings(barbershopId);
         const configuredProvider = getProvider(settings?.provider);
         
         console.log('[Webhook] Tentando enviar via provider configurado:', configuredProvider.name);
-        let sendResult = await configuredProvider.send({
-          to: phone,
-          message: response.message,
-        });
+        let sendResult = await configuredProvider.send(
+          { to: phone, message: response.message },
+          chatbotConfig?.uazapiInstanceToken ?? undefined
+        );
         
         // Se falhou e não é o provider padrão, tenta fallback
         if (!sendResult.success) {
@@ -4066,10 +4604,10 @@ export async function registerRoutes(
           
           if (fallbackProvider.name !== configuredProvider.name) {
             console.log('[Webhook] Tentando fallback com:', fallbackProvider.name);
-            sendResult = await fallbackProvider.send({
-              to: phone,
-              message: response.message,
-            });
+            sendResult = await fallbackProvider.send(
+              { to: phone, message: response.message },
+              chatbotConfig?.uazapiInstanceToken ?? undefined
+            );
           }
         }
         

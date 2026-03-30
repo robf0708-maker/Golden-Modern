@@ -20,19 +20,39 @@ import {
   Copy,
   Check,
   ExternalLink,
-  AlertTriangle
+  AlertTriangle,
+  UserCheck,
+  UserX,
+  UserPlus,
+  Star,
+  RefreshCw,
+  ChevronRight
 } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { useDashboardStats, useAuth } from "@/lib/api";
+import { useDashboardStats, useAuth, useFunnelStats, useRecalculateStats } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery } from "@tanstack/react-query";
 
 export default function Dashboard() {
   const { data: stats, isLoading } = useDashboardStats();
   const { data: authData } = useAuth();
+  const { data: funnelStats, isLoading: funnelLoading } = useFunnelStats();
+  const recalculateMutation = useRecalculateStats();
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
+
+  const handleRecalculate = async () => {
+    try {
+      const result = await recalculateMutation.mutateAsync(undefined as any);
+      toast({
+        title: "Recálculo concluído!",
+        description: result.message,
+      });
+    } catch {
+      toast({ title: "Erro no recálculo", variant: "destructive" });
+    }
+  };
 
   const { data: allSubscriptions = [], isError: subscriptionsError } = useQuery<any[]>({
     queryKey: ["/api/subscriptions"],
@@ -110,6 +130,159 @@ export default function Dashboard() {
             </AlertDescription>
           </Alert>
         )}
+
+        {/* Funil de Clientes */}
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-serif font-bold text-foreground">Funil de Clientes</h2>
+              <p className="text-sm text-muted-foreground">Visão geral do comportamento dos clientes</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRecalculate}
+              disabled={recalculateMutation.isPending}
+              className="gap-2"
+            >
+              <RefreshCw className={`h-4 w-4 ${recalculateMutation.isPending ? 'animate-spin' : ''}`} />
+              {recalculateMutation.isPending ? 'Recalculando...' : 'Recalcular'}
+            </Button>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            <FunnelStageCard
+              label="Novos"
+              count={funnelStats?.counts?.novo_cliente ?? 0}
+              color="blue"
+              icon={UserPlus}
+              loading={funnelLoading}
+            />
+            <FunnelStageCard
+              label="Ativos"
+              count={funnelStats?.counts?.cliente_ativo ?? 0}
+              color="green"
+              icon={UserCheck}
+              loading={funnelLoading}
+            />
+            <FunnelStageCard
+              label="Recorrentes"
+              count={funnelStats?.counts?.cliente_recorrente ?? 0}
+              color="purple"
+              icon={Star}
+              loading={funnelLoading}
+            />
+            <FunnelStageCard
+              label="Com Plano"
+              count={funnelStats?.counts?.cliente_plano ?? 0}
+              color="gold"
+              icon={TrendingUp}
+              loading={funnelLoading}
+            />
+            <FunnelStageCard
+              label="Inativos"
+              count={funnelStats?.counts?.cliente_inativo ?? 0}
+              color="red"
+              icon={UserX}
+              loading={funnelLoading}
+            />
+          </div>
+
+          {funnelStats && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <TrendingUp className="h-4 w-4 text-primary" />
+              Taxa de retorno: <span className="font-bold text-foreground">{funnelStats.returnRate}%</span>
+              <span className="text-xs">(clientes que voltaram pelo menos uma vez)</span>
+            </div>
+          )}
+
+          {funnelStats && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {funnelStats.toReactivate && funnelStats.toReactivate.length > 0 && (
+                <Card className="border-red-500/30 bg-red-500/5">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <UserX className="h-4 w-4 text-red-400" />
+                      Para Reativar
+                      <span className="ml-auto bg-red-500/20 text-red-400 text-xs px-2 py-0.5 rounded-full">
+                        {funnelStats.toReactivate.length}
+                      </span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-1">
+                    {funnelStats.toReactivate.slice(0, 3).map((c: any) => (
+                      <div key={c.id} className="flex items-center justify-between text-xs">
+                        <span className="text-foreground font-medium">{c.name}</span>
+                        <span className="text-muted-foreground">{c.daysSinceVisit}d sem vir</span>
+                      </div>
+                    ))}
+                    {funnelStats.toReactivate.length > 3 && (
+                      <p className="text-xs text-muted-foreground pt-1">
+                        +{funnelStats.toReactivate.length - 3} outros
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {funnelStats.returningSoon && funnelStats.returningSoon.length > 0 && (
+                <Card className="border-green-500/30 bg-green-500/5">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <CalendarCheck className="h-4 w-4 text-green-400" />
+                      Voltam em Breve
+                      <span className="ml-auto bg-green-500/20 text-green-400 text-xs px-2 py-0.5 rounded-full">
+                        {funnelStats.returningSoon.length}
+                      </span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-1">
+                    {funnelStats.returningSoon.slice(0, 3).map((c: any) => (
+                      <div key={c.id} className="flex items-center justify-between text-xs">
+                        <span className="text-foreground font-medium">{c.name}</span>
+                        <span className="text-muted-foreground">
+                          {c.daysUntilReturn === 0 ? 'Hoje' : `em ${c.daysUntilReturn}d`}
+                        </span>
+                      </div>
+                    ))}
+                    {funnelStats.returningSoon.length > 3 && (
+                      <p className="text-xs text-muted-foreground pt-1">
+                        +{funnelStats.returningSoon.length - 3} outros
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {funnelStats.planEligible && funnelStats.planEligible.length > 0 && (
+                <Card className="border-yellow-500/30 bg-yellow-500/5">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <Star className="h-4 w-4 text-yellow-400" />
+                      Oferecer Plano
+                      <span className="ml-auto bg-yellow-500/20 text-yellow-400 text-xs px-2 py-0.5 rounded-full">
+                        {funnelStats.planEligible.length}
+                      </span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-1">
+                    {funnelStats.planEligible.slice(0, 3).map((c: any) => (
+                      <div key={c.id} className="flex items-center justify-between text-xs">
+                        <span className="text-foreground font-medium">{c.name}</span>
+                        <span className="text-muted-foreground">{c.totalVisits} visitas</span>
+                      </div>
+                    ))}
+                    {funnelStats.planEligible.length > 3 && (
+                      <p className="text-xs text-muted-foreground pt-1">
+                        +{funnelStats.planEligible.length - 3} outros
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <KpiCard 
@@ -319,5 +492,36 @@ function QuickActionButton({ icon: Icon, label, href }: any) {
         <span className="text-xs font-medium text-center">{label}</span>
       </button>
     </Link>
+  );
+}
+
+function FunnelStageCard({ label, count, color, icon: Icon, loading }: {
+  label: string;
+  count: number;
+  color: 'blue' | 'green' | 'purple' | 'gold' | 'red';
+  icon: any;
+  loading: boolean;
+}) {
+  const colorMap = {
+    blue:   { bg: 'bg-blue-500/10',   border: 'border-blue-500/30',   text: 'text-blue-400' },
+    green:  { bg: 'bg-green-500/10',  border: 'border-green-500/30',  text: 'text-green-400' },
+    purple: { bg: 'bg-purple-500/10', border: 'border-purple-500/30', text: 'text-purple-400' },
+    gold:   { bg: 'bg-yellow-500/10', border: 'border-yellow-500/30', text: 'text-yellow-400' },
+    red:    { bg: 'bg-red-500/10',    border: 'border-red-500/30', text: 'text-red-400' },
+  };
+  const c = colorMap[color];
+
+  return (
+    <Card className={`${c.border} ${c.bg} border`}>
+      <CardContent className="p-4 flex flex-col items-center justify-center gap-1">
+        <Icon className={`h-5 w-5 ${c.text}`} />
+        {loading ? (
+          <div className="h-7 w-8 animate-pulse bg-muted rounded" />
+        ) : (
+          <span className="text-2xl font-bold text-foreground">{count}</span>
+        )}
+        <span className="text-xs text-muted-foreground text-center">{label}</span>
+      </CardContent>
+    </Card>
   );
 }

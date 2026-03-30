@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Lock, Mail, ArrowRight } from "lucide-react";
 import bgImage from "@assets/generated_images/luxury_dark_barbershop_background_with_gold_accents.png";
-import { useLogin } from "@/lib/api";
+import { useLogin, useAuth } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
 export default function Login() {
@@ -14,8 +14,12 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  
+  const { data: auth } = useAuth();
   const loginMutation = useLogin();
+
+  useEffect(() => {
+    if (auth?.user) setLocation("/dashboard");
+  }, [auth?.user, setLocation]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();

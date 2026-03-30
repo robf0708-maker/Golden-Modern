@@ -96,6 +96,19 @@ export const clients = pgTable("clients", {
   email: text("email"),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+
+  // === FUNIL DE CLIENTES ===
+  firstVisitAt: timestamp("first_visit_at"),
+  lastVisitAt: timestamp("last_visit_at"),
+  totalVisits: integer("total_visits").notNull().default(0),
+  totalSpent: decimal("total_spent", { precision: 10, scale: 2 }),
+  averageTicket: decimal("average_ticket", { precision: 10, scale: 2 }),
+  averageVisitIntervalDays: real("average_visit_interval_days"),
+  clientStatus: text("client_status").notNull().default("novo_cliente"),
+  planOfferEligible: boolean("plan_offer_eligible").notNull().default(false),
+  lastReactivationMessageAt: timestamp("last_reactivation_message_at"),
+  preferredBarberId: varchar("preferred_barber_id").references(() => barbers.id, { onDelete: "set null" }),
+  predictedNextVisit: timestamp("predicted_next_visit"),
 });
 
 export const insertClientSchema = createInsertSchema(clients).omit({ id: true, createdAt: true });
@@ -351,6 +364,15 @@ export const notificationSettings = pgTable("notification_settings", {
   cancellationTemplate: text("cancellation_template"),
   subscriptionExpiryEnabled: boolean("subscription_expiry_enabled").notNull().default(true),
   subscriptionExpiryTemplate: text("subscription_expiry_template"),
+  // Funil de Reativação
+  reactivation20daysEnabled: boolean("reactivation_20days_enabled").notNull().default(true),
+  reactivation20daysTemplate: text("reactivation_20days_template"),
+  reactivation30daysEnabled: boolean("reactivation_30days_enabled").notNull().default(true),
+  reactivation30daysTemplate: text("reactivation_30days_template"),
+  reactivation45daysEnabled: boolean("reactivation_45days_enabled").notNull().default(true),
+  reactivation45daysTemplate: text("reactivation_45days_template"),
+  predictedReturnEnabled: boolean("predicted_return_enabled").notNull().default(true),
+  predictedReturnTemplate: text("predicted_return_template"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -403,6 +425,11 @@ export const chatbotSettings = pgTable("chatbot_settings", {
   maxDaysAhead: integer("max_days_ahead").notNull().default(30), // Máximo de dias para agendar
   // Segurança do webhook
   webhookToken: varchar("webhook_token", { length: 64 }), // Token para verificar chamadas do webhook
+  // WhatsApp multi-instância (UazAPI)
+  uazapiInstanceToken: text("uazapi_instance_token"),   // token da instância desta barbearia
+  uazapiInstanceName: text("uazapi_instance_name"),      // nome da instância no UazAPI
+  whatsappConnected: boolean("whatsapp_connected").default(false),
+  whatsappPhone: text("whatsapp_phone"),                // número conectado ex: +5511999991111
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

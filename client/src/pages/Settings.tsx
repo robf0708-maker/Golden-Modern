@@ -26,7 +26,8 @@ import {
   MessageSquare,
   Bell,
   Bot,
-  Percent
+  Percent,
+  RefreshCw
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -91,6 +92,14 @@ export default function Settings() {
     reminder1HourTemplate: '',
     confirmationTemplate: '',
     cancellationTemplate: '',
+    reactivation20daysEnabled: true,
+    reactivation20daysTemplate: '',
+    reactivation30daysEnabled: true,
+    reactivation30daysTemplate: '',
+    reactivation45daysEnabled: true,
+    reactivation45daysTemplate: '',
+    predictedReturnEnabled: true,
+    predictedReturnTemplate: '',
   });
 
   const [chatbotSettings, setChatbotSettings] = useState({
@@ -105,8 +114,12 @@ export default function Settings() {
     minAdvanceMinutes: 60,
     maxDaysAhead: 30,
     webhookToken: '',
+    whatsappConnected: false,
+    whatsappPhone: null as string | null,
+    uazapiInstanceName: null as string | null,
   });
-
+  const [whatsappQrcode, setWhatsappQrcode] = useState<string | null>(null);
+  const [whatsappConnecting, setWhatsappConnecting] = useState(false);
   const { data: barbershop, isLoading } = useQuery({
     queryKey: ['/api/barbershop'],
     queryFn: async () => {
@@ -168,13 +181,22 @@ export default function Settings() {
         reminder1HourTemplate: notifSettings.reminder1HourTemplate || '',
         confirmationTemplate: notifSettings.confirmationTemplate || '',
         cancellationTemplate: notifSettings.cancellationTemplate || '',
+        reactivation20daysEnabled: notifSettings.reactivation20daysEnabled ?? true,
+        reactivation20daysTemplate: notifSettings.reactivation20daysTemplate || '',
+        reactivation30daysEnabled: notifSettings.reactivation30daysEnabled ?? true,
+        reactivation30daysTemplate: notifSettings.reactivation30daysTemplate || '',
+        reactivation45daysEnabled: notifSettings.reactivation45daysEnabled ?? true,
+        reactivation45daysTemplate: notifSettings.reactivation45daysTemplate || '',
+        predictedReturnEnabled: notifSettings.predictedReturnEnabled ?? true,
+        predictedReturnTemplate: notifSettings.predictedReturnTemplate || '',
       });
     }
   }, [notifSettings]);
 
   useEffect(() => {
     if (chatbotData) {
-      setChatbotSettings({
+      setChatbotSettings(prev => ({
+        ...prev,
         enabled: chatbotData.enabled ?? false,
         systemPrompt: chatbotData.systemPrompt || '',
         greetingNewClient: chatbotData.greetingNewClient || '',
@@ -186,7 +208,11 @@ export default function Settings() {
         minAdvanceMinutes: chatbotData.minAdvanceMinutes || 60,
         maxDaysAhead: chatbotData.maxDaysAhead || 30,
         webhookToken: chatbotData.webhookToken || '',
-      });
+        whatsappConnected: chatbotData.whatsappConnected ?? false,
+        whatsappPhone: chatbotData.whatsappPhone ?? null,
+        uazapiInstanceName: chatbotData.uazapiInstanceName ?? null,
+        uazapiInstanceToken: chatbotData.uazapiInstanceToken ?? null,
+      }));
     }
   }, [chatbotData]);
 
@@ -262,6 +288,108 @@ export default function Settings() {
     chatbotMutation.mutate(chatbotSettings);
   };
 
+  const whatsappConnectMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/whatsapp/connect', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Falha ao conectar');
+      }
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.connected) {
+        // Instância já estava conectada — sincronizar UI imediatamente
+        setWhatsappConnecting(false);
+        setWhatsappQrcode(null);
+        setChatbotSettings(prev => ({ ...prev, whatsappConnected: true, whatsappPhone: data.phone || prev.whatsappPhone, uazapiInstanceName: data.instanceName || prev.uazapiInstanceName }));
+        queryClient.invalidateQueries({ queryKey: ['/api/chatbot-settings'] });
+        toast({ title: 'WhatsApp conectado!' });
+        return;
+      }
+      setWhatsappQrcode(data.qrcode ? String(data.qrcode) : null);
+      setWhatsappConnecting(true);
+      setChatbotSettings(prev => ({ ...prev, uazapiInstanceName: data.instanceName || prev.uazapiInstanceName }));
+      queryClient.invalidateQueries({ queryKey: ['/api/chatbot-settings'] });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Erro', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const whatsappDisconnectMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/whatsapp/disconnect', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Falha ao desconectar');
+      return res.json();
+    },
+    onSuccess: () => {
+      setWhatsappQrcode(null);
+      setWhatsappConnecting(false);
+      // Mantém uazapiInstanceName para reutilizar a instância na próxima conexão
+      setChatbotSettings(prev => ({ ...prev, whatsappConnected: false, whatsappPhone: null }));
+      queryClient.invalidateQueries({ queryKey: ['/api/chatbot-settings'] });
+      toast({ title: 'WhatsApp desconectado' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Erro', description: error.message, variant: 'destructive' });
+    },
+  });
+
+
+  const { data: whatsappStatus } = useQuery({
+    queryKey: ['/api/whatsapp/status', whatsappConnecting],
+    queryFn: async () => {
+      const res = await fetch('/api/whatsapp/status', { credentials: 'include' });
+      if (!res.ok) throw new Error('Falha ao buscar status');
+      return res.json();
+    },
+    refetchInterval: whatsappConnecting ? 3000 : false,
+    enabled: whatsappConnecting || (!!chatbotSettings.uazapiInstanceName && !chatbotSettings.whatsappConnected),
+  });
+
+  useEffect(() => {
+    if (whatsappStatus?.connected) {
+      setWhatsappConnecting(false);
+      setWhatsappQrcode(null);
+      setChatbotSettings(prev => ({ ...prev, whatsappConnected: true, whatsappPhone: whatsappStatus.phone || null }));
+      queryClient.invalidateQueries({ queryKey: ['/api/chatbot-settings'] });
+    }
+  }, [whatsappStatus?.connected, whatsappStatus?.phone]);
+
+  // Buscar QR code quando estiver aguardando conexão (inclui ao recarregar a página)
+  const awaitingConnection = (whatsappConnecting || chatbotSettings.uazapiInstanceName) && !chatbotSettings.whatsappConnected;
+  useEffect(() => {
+    if (!awaitingConnection || !chatbotSettings.uazapiInstanceName) return;
+    const fetchQr = async () => {
+      try {
+        const res = await fetch('/api/whatsapp/qrcode', { credentials: 'include' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.connected) {
+            // Instância conectou! Atualizar UI
+            setWhatsappConnecting(false);
+            setWhatsappQrcode(null);
+            setChatbotSettings(prev => ({ ...prev, whatsappConnected: true, whatsappPhone: data.phone || prev.whatsappPhone }));
+            queryClient.invalidateQueries({ queryKey: ['/api/chatbot-settings'] });
+          } else if (data.qrcode) {
+            setWhatsappQrcode(String(data.qrcode));
+          }
+        }
+      } catch { /* ignore */ }
+    };
+    fetchQr(); // Busca imediata
+    const t = setInterval(fetchQr, 3000);
+    return () => clearInterval(t);
+  }, [awaitingConnection, chatbotSettings.uazapiInstanceName, chatbotSettings.whatsappConnected]);
+
+
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -279,16 +407,20 @@ export default function Settings() {
   };
 
   const updateWorkingHours = (day: keyof WorkingHours, field: 'open' | 'close' | 'enabled', value: string | boolean) => {
-    setFormData(prev => ({
-      ...prev,
-      workingHours: {
-        ...prev.workingHours,
-        [day]: {
-          ...prev.workingHours[day],
-          [field]: value,
+    setFormData(prev => {
+      const wh = prev.workingHours || DEFAULT_WORKING_HOURS;
+      const dayData = wh[day] || { open: '09:00', close: '19:00', enabled: true };
+      return {
+        ...prev,
+        workingHours: {
+          ...wh,
+          [day]: {
+            ...dayData,
+            [field]: value,
+          },
         },
-      },
-    }));
+      };
+    });
   };
 
   const bookingLink = authData?.user?.barbershopId 
@@ -350,7 +482,7 @@ export default function Settings() {
         </div>
 
         <Tabs defaultValue="info" className="w-full">
-          <TabsList className="grid w-full grid-cols-8 mb-6">
+          <TabsList className="grid w-full grid-cols-9 mb-6">
             <TabsTrigger value="info" className="flex items-center gap-2" data-testid="tab-info">
               <Building2 className="h-4 w-4" />
               <span className="hidden sm:inline">Dados</span>
@@ -382,6 +514,10 @@ export default function Settings() {
             <TabsTrigger value="chatbot" className="flex items-center gap-2" data-testid="tab-chatbot">
               <Bot className="h-4 w-4" />
               <span className="hidden sm:inline">Chatbot</span>
+            </TabsTrigger>
+            <TabsTrigger value="whatsapp" className="flex items-center gap-2" data-testid="tab-whatsapp">
+              <MessageSquare className="h-4 w-4" />
+              <span className="hidden sm:inline">WhatsApp</span>
             </TabsTrigger>
           </TabsList>
 
@@ -1014,6 +1150,107 @@ export default function Settings() {
 
                 <Separator />
 
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw className="h-5 w-5 text-orange-500" />
+                    <div>
+                      <h4 className="font-medium text-foreground">Funil de Reativação</h4>
+                      <p className="text-sm text-muted-foreground">Mensagens automáticas para clientes inativos e previsão de retorno</p>
+                    </div>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Variáveis disponíveis: {'{nome}'}, {'{barbearia}'}
+                  </p>
+
+                  <div className="space-y-4">
+                    <div className="space-y-2 p-4 rounded-lg border border-border/50 bg-card/30">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">Reativação 20 dias</p>
+                          <p className="text-sm text-muted-foreground">Enviar após 20 dias sem visita (1a mensagem)</p>
+                        </div>
+                        <Switch 
+                          checked={notificationSettings.reactivation20daysEnabled}
+                          onCheckedChange={(v) => setNotificationSettings(prev => ({ ...prev, reactivation20daysEnabled: v }))}
+                        />
+                      </div>
+                      {notificationSettings.reactivation20daysEnabled && (
+                        <Textarea
+                          placeholder="Oi {nome}! Sentimos sua falta na {barbearia}! Já faz um tempinho desde o seu último corte. Que tal garantir um horário?"
+                          value={notificationSettings.reactivation20daysTemplate}
+                          onChange={(e) => setNotificationSettings(prev => ({ ...prev, reactivation20daysTemplate: e.target.value }))}
+                          className="min-h-[80px]"
+                        />
+                      )}
+                    </div>
+
+                    <div className="space-y-2 p-4 rounded-lg border border-border/50 bg-card/30">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">Reativação 30 dias</p>
+                          <p className="text-sm text-muted-foreground">Enviar após 30 dias sem visita (2a mensagem)</p>
+                        </div>
+                        <Switch 
+                          checked={notificationSettings.reactivation30daysEnabled}
+                          onCheckedChange={(v) => setNotificationSettings(prev => ({ ...prev, reactivation30daysEnabled: v }))}
+                        />
+                      </div>
+                      {notificationSettings.reactivation30daysEnabled && (
+                        <Textarea
+                          placeholder="Olá {nome}! Faz um mês que não te vemos por aqui na {barbearia}! Vamos agendar seu próximo corte?"
+                          value={notificationSettings.reactivation30daysTemplate}
+                          onChange={(e) => setNotificationSettings(prev => ({ ...prev, reactivation30daysTemplate: e.target.value }))}
+                          className="min-h-[80px]"
+                        />
+                      )}
+                    </div>
+
+                    <div className="space-y-2 p-4 rounded-lg border border-border/50 bg-card/30">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">Reativação 45 dias</p>
+                          <p className="text-sm text-muted-foreground">Enviar após 45 dias sem visita (3a e última mensagem)</p>
+                        </div>
+                        <Switch 
+                          checked={notificationSettings.reactivation45daysEnabled}
+                          onCheckedChange={(v) => setNotificationSettings(prev => ({ ...prev, reactivation45daysEnabled: v }))}
+                        />
+                      </div>
+                      {notificationSettings.reactivation45daysEnabled && (
+                        <Textarea
+                          placeholder="{nome}, sua presença faz falta! Já tem um tempo que você não visita a {barbearia}. Responda para agendar!"
+                          value={notificationSettings.reactivation45daysTemplate}
+                          onChange={(e) => setNotificationSettings(prev => ({ ...prev, reactivation45daysTemplate: e.target.value }))}
+                          className="min-h-[80px]"
+                        />
+                      )}
+                    </div>
+
+                    <div className="space-y-2 p-4 rounded-lg border border-border/50 bg-card/30">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">Previsão de Retorno</p>
+                          <p className="text-sm text-muted-foreground">Enviar 3 dias antes da data prevista de retorno do cliente</p>
+                        </div>
+                        <Switch 
+                          checked={notificationSettings.predictedReturnEnabled}
+                          onCheckedChange={(v) => setNotificationSettings(prev => ({ ...prev, predictedReturnEnabled: v }))}
+                        />
+                      </div>
+                      {notificationSettings.predictedReturnEnabled && (
+                        <Textarea
+                          placeholder="Olá {nome}! Parece que já está quase na hora de alinhar o visual! Que tal já garantir seu horário na {barbearia}?"
+                          value={notificationSettings.predictedReturnTemplate}
+                          onChange={(e) => setNotificationSettings(prev => ({ ...prev, predictedReturnTemplate: e.target.value }))}
+                          className="min-h-[80px]"
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <Separator />
+
                 <div className="flex justify-end">
                   <Button 
                     onClick={handleSaveNotifications}
@@ -1154,63 +1391,6 @@ export default function Settings() {
                     <Separator />
 
                     <div className="space-y-4">
-                      <h4 className="font-medium text-foreground">Integração WhatsApp (Webhook)</h4>
-                      
-                      <div className="p-4 rounded-lg bg-muted/50 border border-border space-y-3">
-                        <div>
-                          <Label className="text-xs text-muted-foreground">URL do Webhook</Label>
-                          <div className="flex gap-2 mt-1">
-                            <Input
-                              readOnly
-                              value={barbershop ? `${window.location.origin}/api/webhook/whatsapp/${barbershop.id}` : ''}
-                              className="font-mono text-xs"
-                              data-testid="input-webhook-url"
-                            />
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                navigator.clipboard.writeText(`${window.location.origin}/api/webhook/whatsapp/${barbershop?.id}`);
-                                toast({ title: 'URL copiada!' });
-                              }}
-                            >
-                              <Copy className="h-4 w-4" />
-                            </Button>
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-1">Configure este URL na sua API de WhatsApp (Evolution API)</p>
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label>Token de Segurança (opcional)</Label>
-                          <div className="flex gap-2">
-                            <Input
-                              value={chatbotSettings.webhookToken}
-                              onChange={(e) => setChatbotSettings(prev => ({ ...prev, webhookToken: e.target.value }))}
-                              placeholder="token-secreto-aqui"
-                              className="font-mono"
-                              data-testid="input-webhook-token"
-                            />
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                const token = crypto.randomUUID().replace(/-/g, '').slice(0, 32);
-                                setChatbotSettings(prev => ({ ...prev, webhookToken: token }));
-                              }}
-                            >
-                              Gerar
-                            </Button>
-                          </div>
-                          <p className="text-xs text-muted-foreground">Configure o mesmo token no header 'x-webhook-token' da sua API de WhatsApp</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    <Separator />
-
-                    <div className="space-y-4">
                       <h4 className="font-medium text-foreground">Comportamento da IA (Avançado)</h4>
                       
                       <div className="space-y-2">
@@ -1243,6 +1423,120 @@ export default function Settings() {
                       <Save className="mr-2 h-4 w-4" />
                     )}
                     Salvar Configurações do Chatbot
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="whatsapp">
+            <Card className="border-border/50 bg-card/50">
+              <CardHeader>
+                <CardTitle className="font-serif flex items-center gap-2">
+                  <MessageSquare className="h-5 w-5 text-green-500" />
+                  Integração WhatsApp
+                </CardTitle>
+                <CardDescription>
+                  Conecte o número da barbearia para enviar avisos (lembretes, confirmações) e usar o chatbot. A conexão funciona independente do chatbot estar ativado.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="p-4 rounded-lg bg-muted/50 border border-border space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">Status da Conexão</span>
+                  </div>
+
+                  {chatbotSettings.whatsappConnected ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-green-500" />
+                        <span className="text-sm font-medium text-green-600">Conectado</span>
+                      </div>
+                      {chatbotSettings.whatsappPhone && (
+                        <p className="text-sm text-muted-foreground">
+                          Número: {chatbotSettings.whatsappPhone.replace(/^55/, '+55 ').replace(/(\+55\s?)(\d{2})(\d{5})(\d{4})/, '+55 ($2) $3-$4')}
+                        </p>
+                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => whatsappDisconnectMutation.mutate()}
+                        disabled={whatsappDisconnectMutation.isPending}
+                      >
+                        {whatsappDisconnectMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                        Desconectar
+                      </Button>
+                    </div>
+                  ) : whatsappConnecting || (chatbotSettings.uazapiInstanceName && !chatbotSettings.whatsappConnected) ? (
+                    <div className="space-y-4">
+                      {whatsappQrcode ? (
+                        <div className="flex flex-col items-center gap-3">
+                          <p className="text-sm font-medium text-center">Escaneie o QR code com o WhatsApp</p>
+                          <img
+                            src={typeof whatsappQrcode === 'string' && whatsappQrcode.startsWith('data:') ? whatsappQrcode : `data:image/png;base64,${whatsappQrcode}`}
+                            alt="QR Code WhatsApp"
+                            className="w-56 h-56 object-contain border rounded-xl bg-white p-2 shadow-sm"
+                          />
+                          <div className="text-xs text-muted-foreground text-center space-y-1">
+                            <p>1. Abra o WhatsApp no celular</p>
+                            <p>2. Toque em ⋮ → Dispositivos conectados</p>
+                            <p>3. Toque em "Conectar dispositivo"</p>
+                            <p>4. Aponte a câmera para o código acima</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center gap-3 py-4">
+                          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                          <p className="text-sm text-muted-foreground">Aguardando QR code...</p>
+                        </div>
+                      )}
+                      <div className="flex justify-center">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="text-muted-foreground hover:text-destructive"
+                          onClick={() => whatsappDisconnectMutation.mutate()}
+                          disabled={whatsappDisconnectMutation.isPending}
+                        >
+                          {whatsappDisconnectMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                          Cancelar
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-muted-foreground/50" />
+                        <span className="text-sm font-medium">Desconectado</span>
+                      </div>
+                      <Button
+                        type="button"
+                        onClick={() => whatsappConnectMutation.mutate()}
+                        disabled={whatsappConnectMutation.isPending}
+                      >
+                        {whatsappConnectMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                        Conectar WhatsApp
+                      </Button>
+                    </div>
+                  )}
+
+                </div>
+
+                <div className="flex justify-end">
+                  <Button
+                    onClick={() => chatbotMutation.mutate(chatbotSettings)}
+                    disabled={chatbotMutation.isPending}
+                    className="bg-primary text-primary-foreground hover:bg-primary/90"
+                    data-testid="button-save-whatsapp"
+                  >
+                    {chatbotMutation.isPending ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Save className="mr-2 h-4 w-4" />
+                    )}
+                    Salvar Configurações
                   </Button>
                 </div>
               </CardContent>

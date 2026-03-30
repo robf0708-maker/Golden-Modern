@@ -45,6 +45,8 @@ async function buildAll() {
     ...Object.keys(pkg.devDependencies || {}),
   ];
   const externals = allDeps.filter((dep) => !allowlist.includes(dep));
+  // Replit-only package; not in package.json — must not be resolved at bundle time (Railway/VPS builds)
+  const serverExternals = [...externals, "stripe-replit-sync"];
 
   await esbuild({
     entryPoints: ["server/index.ts"],
@@ -56,7 +58,7 @@ async function buildAll() {
       "process.env.NODE_ENV": '"production"',
     },
     minify: true,
-    external: externals,
+    external: serverExternals,
     logLevel: "info",
   });
 }

@@ -5,7 +5,7 @@ import { createServer } from "http";
 import session from "express-session";
 import ConnectPgSimple from "connect-pg-simple";
 import pg from "pg";
-import { startMessageSenderJob } from "./messaging";
+import { startMessageSenderJob, startFunnelJob } from "./messaging";
 
 const app = express();
 const httpServer = createServer(app);
@@ -132,6 +132,9 @@ app.use((req, res, next) => {
       // Start the message sender job (checks for pending messages every 60 seconds)
       startMessageSenderJob(60000);
       log('Message sender job started');
+
+      startFunnelJob();
+      log('Funnel job started (daily)');
     },
   );
 })();

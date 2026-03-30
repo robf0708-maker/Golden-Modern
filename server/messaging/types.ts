@@ -12,7 +12,7 @@ export interface MessageResult {
 
 export interface MessageProvider {
   name: string;
-  send(payload: MessagePayload): Promise<MessageResult>;
+  send(payload: MessagePayload, instanceToken?: string): Promise<MessageResult>;
   isConfigured(): boolean;
 }
 
@@ -21,7 +21,12 @@ export type NotificationType =
   | 'appointment_reminder_1day'
   | 'appointment_reminder_1hour'
   | 'appointment_confirmed'
-  | 'appointment_cancelled';
+  | 'appointment_cancelled'
+  // Funil de clientes
+  | 'reactivation_20days'
+  | 'reactivation_30days'
+  | 'reactivation_45days'
+  | 'predicted_return';
 
 export interface NotificationConfig {
   welcomeEnabled: boolean;

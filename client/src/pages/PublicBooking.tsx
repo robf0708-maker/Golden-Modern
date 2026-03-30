@@ -115,6 +115,7 @@ export default function PublicBooking() {
   const [appointmentToCancel, setAppointmentToCancel] = useState<string | null>(null);
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [isAutoAssigning, setIsAutoAssigning] = useState(false);
+  const [cameFromAutoAssign, setCameFromAutoAssign] = useState(false);
 
   const { data: barbershop } = useQuery({
     queryKey: [`/public/${barbershopId}/info`],
@@ -458,6 +459,7 @@ export default function PublicBooking() {
     setSelectedService(null);
     setAdditionalServices([]);
     setSelectedTime(null);
+    setCameFromAutoAssign(false);
     setStep('barber');
   };
 
@@ -494,6 +496,7 @@ export default function PublicBooking() {
       const [year, month, day] = data.firstSlotDate.split('-').map(Number);
       setSelectedDate(new Date(year, month - 1, day));
       setSelectedTime(data.firstSlotTime);
+      setCameFromAutoAssign(true);
       setStep('confirm');
     } catch {
       toast({
@@ -819,11 +822,31 @@ export default function PublicBooking() {
             </CardHeader>
             <CardContent>
               <div className="grid gap-3">
+                {!usePackageMode && (
+                  <button
+                    onClick={() => {
+                      setSelectedBarber(null);
+                      setStep('service');
+                    }}
+                    className="flex items-center gap-4 p-4 rounded-xl border border-primary/40 bg-primary/5 hover:border-primary/70 hover:bg-primary/10 transition-all text-left"
+                    data-testid="button-barber-no-preference"
+                  >
+                    <div className="h-14 w-14 rounded-full border-2 border-primary/40 bg-primary/10 flex items-center justify-center flex-shrink-0">
+                      <Sparkles className="h-6 w-6 text-primary" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-primary">Sem preferência</p>
+                      <p className="text-sm text-muted-foreground">Primeiro horário disponível</p>
+                    </div>
+                    <ChevronRight className="h-5 w-5 text-primary ml-auto" />
+                  </button>
+                )}
                 {barbers.map((barber) => (
                   <button
                     key={barber.id}
                     onClick={() => {
                       setSelectedBarber(barber);
+                      setCameFromAutoAssign(false);
                       if (usePackageMode) {
                         setStep('datetime');
                       } else {
@@ -857,7 +880,7 @@ export default function PublicBooking() {
           <Card className="border-primary/20 bg-card/80 backdrop-blur" data-testid="card-service-selection">
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
-                <Button variant="ghost" size="sm" onClick={() => setStep('barber')}>
+                <Button variant="ghost" size="sm" onClick={() => { setSelectedTime(null); setCameFromAutoAssign(false); setStep('barber'); }}>
                   <ChevronLeft className="h-4 w-4 mr-1" /> Voltar
                 </Button>
                 <Badge variant="outline" className="text-primary border-primary/30">2/3</Badge>
@@ -970,14 +993,16 @@ export default function PublicBooking() {
                   </>
                 )}
               </Button>
-              <Button 
-                className="w-full mt-2 bg-primary hover:bg-primary/90"
-                disabled={!selectedService}
-                onClick={() => setStep('datetime')}
-                data-testid="button-continue-services"
-              >
-                Continuar
-              </Button>
+              {selectedBarber && (
+                <Button 
+                  className="w-full mt-2 bg-primary hover:bg-primary/90"
+                  disabled={!selectedService}
+                  onClick={() => setStep('datetime')}
+                  data-testid="button-continue-services"
+                >
+                  Continuar
+                </Button>
+              )}
             </CardContent>
           </Card>
         )}
@@ -1092,7 +1117,7 @@ export default function PublicBooking() {
           <Card className="border-primary/20 bg-card/80 backdrop-blur" data-testid="card-confirm">
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
-                <Button variant="ghost" size="sm" onClick={() => setStep('datetime')}>
+                <Button variant="ghost" size="sm" onClick={() => setStep(cameFromAutoAssign ? 'service' : 'datetime')}>
                   <ChevronLeft className="h-4 w-4 mr-1" /> Voltar
                 </Button>
               </div>

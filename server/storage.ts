@@ -39,6 +39,35 @@ const pool = new pg.Pool({
 
 const db = drizzle(pool, { schema });
 
+// Tipos para o funil de clientes
+export interface ClientsFunnelStats {
+  counts: {
+    novo_cliente: number;
+    cliente_ativo: number;
+    cliente_recorrente: number;
+    cliente_plano: number;
+    cliente_inativo: number;
+  };
+  planEligible: Array<{ id: string; name: string; phone: string; totalVisits: number; averageVisitIntervalDays: number | null }>;
+  returningSoon: Array<{ id: string; name: string; phone: string; predictedNextVisit: Date | null; daysUntilReturn: number }>;
+  toReactivate: Array<{ id: string; name: string; phone: string; lastVisitAt: Date | null; daysSinceVisit: number }>;
+  returnRate: number;
+}
+
+export interface ClientForFunnelJob {
+  id: string;
+  name: string;
+  phone: string;
+  barbershopId: string;
+  lastVisitAt: Date | null;
+  predictedNextVisit: Date | null;
+  lastReactivationMessageAt: Date | null;
+  clientStatus: string;
+  preferredBarberId: string | null;
+  daysSinceVisit: number;
+  daysUntilPredictedVisit: number | null;
+}
+
 export interface IStorage {
   // Users & Auth
   getUserById(id: string): Promise<User | undefined>;
@@ -64,6 +93,12 @@ export interface IStorage {
   createClient(client: InsertClient): Promise<Client>;
   updateClient(id: string, client: Partial<InsertClient>): Promise<Client | undefined>;
   deleteClient(id: string): Promise<void>;
+  // Funil de Clientes
+  updateClientFunnelData(clientId: string, barbershopId: string): Promise<void>;
+  recalculateAllClientsStats(barbershopId: string): Promise<{ updated: number; errors: number }>;
+  getClientsFunnelStats(barbershopId: string): Promise<ClientsFunnelStats>;
+  getClientsForFunnelJob(barbershopId: string): Promise<ClientForFunnelJob[]>;
+  getAllClientsForFunnelJob(): Promise<ClientForFunnelJob[]>;
   
   // Services
   getServices(barbershopId: string): Promise<Service[]>;
@@ -164,6 +199,7 @@ export interface IStorage {
   // Chatbot Settings
   getChatbotSettings(barbershopId: string): Promise<ChatbotSettings | undefined>;
   upsertChatbotSettings(settings: InsertChatbotSettings): Promise<ChatbotSettings>;
+  updateChatbotWhatsappFields(barbershopId: string, fields: Partial<Pick<ChatbotSettings, 'uazapiInstanceToken' | 'uazapiInstanceName' | 'whatsappConnected' | 'whatsappPhone'>>): Promise<ChatbotSettings | undefined>;
   
   // Chat Conversations
   getChatConversation(barbershopId: string, phone: string): Promise<ChatConversation | undefined>;
@@ -304,6 +340,248 @@ export class DbStorage implements IStorage {
 
   async deleteClient(id: string): Promise<void> {
     await db.delete(schema.clients).where(eq(schema.clients.id, id));
+  }
+
+  // Funil de Clientes
+  async updateClientFunnelData(clientId: string, barbershopId: string): Promise<void> {
+    const completedAppointments = await db.select()
+      .from(schema.appointments)
+      .where(
+        and(
+          eq(schema.appointments.clientId, clientId),
+          eq(schema.appointments.barbershopId, barbershopId),
+          eq(schema.appointments.status, 'completed')
+        )
+      )
+      .orderBy(schema.appointments.startTime);
+
+    const totalVisits = completedAppointments.length;
+
+    if (totalVisits === 0) {
+      await db.update(schema.clients)
+        .set({ clientStatus: 'novo_cliente', totalVisits: 0, planOfferEligible: false })
+        .where(eq(schema.clients.id, clientId));
+      return;
+    }
+
+    const firstVisitAt = completedAppointments[0].startTime;
+    const lastVisitAt = completedAppointments[completedAppointments.length - 1].startTime;
+
+    let averageVisitIntervalDays: number | null = null;
+    if (totalVisits >= 2) {
+      let totalIntervalDays = 0;
+      for (let i = 1; i < completedAppointments.length; i++) {
+        const prev = new Date(completedAppointments[i - 1].startTime).getTime();
+        const curr = new Date(completedAppointments[i].startTime).getTime();
+        totalIntervalDays += (curr - prev) / (1000 * 60 * 60 * 24);
+      }
+      averageVisitIntervalDays = totalIntervalDays / (totalVisits - 1);
+    }
+
+    let predictedNextVisit: Date | null = null;
+    if (averageVisitIntervalDays !== null && lastVisitAt) {
+      predictedNextVisit = new Date(
+        new Date(lastVisitAt).getTime() + averageVisitIntervalDays * 24 * 60 * 60 * 1000
+      );
+    }
+
+    const clientComandas = await db.select()
+      .from(schema.comandas)
+      .where(
+        and(
+          eq(schema.comandas.clientId, clientId),
+          eq(schema.comandas.barbershopId, barbershopId),
+          eq(schema.comandas.status, 'closed')
+        )
+      );
+
+    const totalSpent = clientComandas.reduce((sum, c) => sum + parseFloat(c.total || '0'), 0);
+    const averageTicket = totalVisits > 0 ? totalSpent / totalVisits : 0;
+
+    const activePackages = await this.getActiveClientPackages(clientId);
+    const hasActivePlan = activePackages.length > 0;
+
+    const now = getNowAsUtcLocal();
+    const daysSinceVisit = lastVisitAt
+      ? (now.getTime() - new Date(lastVisitAt).getTime()) / (1000 * 60 * 60 * 24)
+      : 9999;
+
+    let clientStatus: string;
+    if (hasActivePlan) {
+      clientStatus = 'cliente_plano';
+    } else if (daysSinceVisit > 30) {
+      clientStatus = 'cliente_inativo';
+    } else if (totalVisits >= 3) {
+      clientStatus = 'cliente_recorrente';
+    } else if (totalVisits === 2) {
+      clientStatus = 'cliente_ativo';
+    } else {
+      clientStatus = 'novo_cliente';
+    }
+
+    const planOfferEligible = (
+      !hasActivePlan &&
+      totalVisits >= 3 &&
+      averageVisitIntervalDays !== null &&
+      averageVisitIntervalDays < 30
+    );
+
+    await db.update(schema.clients)
+      .set({
+        firstVisitAt: new Date(firstVisitAt),
+        lastVisitAt: new Date(lastVisitAt),
+        totalVisits,
+        totalSpent: totalSpent.toFixed(2),
+        averageTicket: averageTicket.toFixed(2),
+        averageVisitIntervalDays,
+        clientStatus,
+        planOfferEligible,
+        predictedNextVisit,
+      })
+      .where(eq(schema.clients.id, clientId));
+  }
+
+  async recalculateAllClientsStats(barbershopId: string): Promise<{ updated: number; errors: number }> {
+    const clients = await this.getClients(barbershopId);
+    let updated = 0;
+    let errors = 0;
+
+    for (const client of clients) {
+      try {
+        await this.updateClientFunnelData(client.id, barbershopId);
+        updated++;
+      } catch (err) {
+        console.error(`[Funil] Erro ao recalcular cliente ${client.id}:`, err);
+        errors++;
+      }
+    }
+
+    console.log(`[Funil] Recálculo concluído: ${updated} atualizados, ${errors} erros`);
+    return { updated, errors };
+  }
+
+  async getClientsFunnelStats(barbershopId: string): Promise<ClientsFunnelStats> {
+    const clients = await this.getClients(barbershopId);
+    const now = getNowAsUtcLocal();
+
+    const counts = {
+      novo_cliente: 0,
+      cliente_ativo: 0,
+      cliente_recorrente: 0,
+      cliente_plano: 0,
+      cliente_inativo: 0,
+    };
+
+    const planEligible: ClientsFunnelStats['planEligible'] = [];
+    const returningSoon: ClientsFunnelStats['returningSoon'] = [];
+    const toReactivate: ClientsFunnelStats['toReactivate'] = [];
+
+    for (const client of clients) {
+      const status = (client.clientStatus || 'novo_cliente') as keyof typeof counts;
+      if (status in counts) counts[status]++;
+
+      if (client.planOfferEligible) {
+        planEligible.push({
+          id: client.id,
+          name: client.name,
+          phone: client.phone,
+          totalVisits: client.totalVisits || 0,
+          averageVisitIntervalDays: client.averageVisitIntervalDays ? parseFloat(String(client.averageVisitIntervalDays)) : null,
+        });
+      }
+
+      if (client.predictedNextVisit) {
+        const daysUntilReturn = (new Date(client.predictedNextVisit).getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+        if (daysUntilReturn >= 0 && daysUntilReturn <= 7) {
+          returningSoon.push({
+            id: client.id,
+            name: client.name,
+            phone: client.phone,
+            predictedNextVisit: new Date(client.predictedNextVisit),
+            daysUntilReturn: Math.ceil(daysUntilReturn),
+          });
+        }
+      }
+
+      if (client.clientStatus === 'cliente_inativo' && client.lastVisitAt) {
+        const daysSinceVisit = (now.getTime() - new Date(client.lastVisitAt).getTime()) / (1000 * 60 * 60 * 24);
+        toReactivate.push({
+          id: client.id,
+          name: client.name,
+          phone: client.phone,
+          lastVisitAt: new Date(client.lastVisitAt),
+          daysSinceVisit: Math.floor(daysSinceVisit),
+        });
+      }
+    }
+
+    const clientsWithVisits = clients.filter(c => (c.totalVisits || 0) >= 1).length;
+    const returningClients = clients.filter(c => (c.totalVisits || 0) >= 2).length;
+    const returnRate = clientsWithVisits > 0 ? Math.round((returningClients / clientsWithVisits) * 100) : 0;
+
+    return { counts, planEligible, returningSoon, toReactivate, returnRate };
+  }
+
+  async getClientsForFunnelJob(barbershopId: string): Promise<ClientForFunnelJob[]> {
+    const clients = await this.getClients(barbershopId);
+    const now = getNowAsUtcLocal();
+
+    return clients
+      .filter(c => c.lastVisitAt || c.predictedNextVisit)
+      .map(c => {
+        const daysSinceVisit = c.lastVisitAt
+          ? (now.getTime() - new Date(c.lastVisitAt).getTime()) / (1000 * 60 * 60 * 24)
+          : 9999;
+
+        const daysUntilPredictedVisit = c.predictedNextVisit
+          ? (new Date(c.predictedNextVisit).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
+          : null;
+
+        return {
+          id: c.id,
+          name: c.name,
+          phone: c.phone,
+          barbershopId: c.barbershopId,
+          lastVisitAt: c.lastVisitAt ? new Date(c.lastVisitAt) : null,
+          predictedNextVisit: c.predictedNextVisit ? new Date(c.predictedNextVisit) : null,
+          lastReactivationMessageAt: c.lastReactivationMessageAt ? new Date(c.lastReactivationMessageAt) : null,
+          clientStatus: c.clientStatus || 'novo_cliente',
+          preferredBarberId: c.preferredBarberId || null,
+          daysSinceVisit,
+          daysUntilPredictedVisit,
+        };
+      });
+  }
+
+  async getAllClientsForFunnelJob(): Promise<ClientForFunnelJob[]> {
+    const allClients = await db.select().from(schema.clients);
+    const now = getNowAsUtcLocal();
+
+    return allClients
+      .filter(c => c.lastVisitAt || c.predictedNextVisit)
+      .map(c => {
+        const daysSinceVisit = c.lastVisitAt
+          ? (now.getTime() - new Date(c.lastVisitAt).getTime()) / (1000 * 60 * 60 * 24)
+          : 9999;
+
+        const daysUntilPredictedVisit = c.predictedNextVisit
+          ? (new Date(c.predictedNextVisit).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
+          : null;
+
+        return {
+          id: c.id,
+          name: c.name,
+          phone: c.phone,
+          barbershopId: c.barbershopId,
+          lastVisitAt: c.lastVisitAt ? new Date(c.lastVisitAt) : null,
+          predictedNextVisit: c.predictedNextVisit ? new Date(c.predictedNextVisit) : null,
+          lastReactivationMessageAt: c.lastReactivationMessageAt ? new Date(c.lastReactivationMessageAt) : null,
+          clientStatus: c.clientStatus || 'novo_cliente',
+          preferredBarberId: c.preferredBarberId || null,
+          daysSinceVisit,
+          daysUntilPredictedVisit,
+        };
+      });
   }
 
   // Services
@@ -905,6 +1183,26 @@ export class DbStorage implements IStorage {
     return result[0];
   }
 
+  async updateChatbotWhatsappFields(barbershopId: string, fields: Partial<Pick<ChatbotSettings, 'uazapiInstanceToken' | 'uazapiInstanceName' | 'whatsappConnected' | 'whatsappPhone'>>): Promise<ChatbotSettings | undefined> {
+    const cleanFields = Object.fromEntries(
+      Object.entries(fields).filter(([, v]) => v !== undefined)
+    ) as Partial<Pick<ChatbotSettings, 'uazapiInstanceToken' | 'uazapiInstanceName' | 'whatsappConnected' | 'whatsappPhone'>>;
+    if (Object.keys(cleanFields).length === 0) return this.getChatbotSettings(barbershopId);
+    const existing = await this.getChatbotSettings(barbershopId);
+    if (!existing) {
+      await db.insert(schema.chatbotSettings).values({
+        barbershopId,
+        ...cleanFields,
+      });
+      return this.getChatbotSettings(barbershopId);
+    }
+    const result = await db.update(schema.chatbotSettings)
+      .set({ ...cleanFields, updatedAt: new Date() })
+      .where(eq(schema.chatbotSettings.barbershopId, barbershopId))
+      .returning();
+    return result[0];
+  }
+
   // Chat Conversations
   async getChatConversation(barbershopId: string, phone: string): Promise<ChatConversation | undefined> {
     const result = await db.select().from(schema.chatConversations).where(
@@ -1277,7 +1575,7 @@ export class DbStorage implements IStorage {
         const allPayments = await tx.select().from(schema.commissionPayments)
           .where(eq(schema.commissionPayments.barbershopId, barbershopId));
 
-        for (const paymentId of paymentIdsSet) {
+        for (const paymentId of Array.from(paymentIdsSet)) {
           const payment = allPayments.find(p => p.id === paymentId);
           if (!payment) continue;
 
