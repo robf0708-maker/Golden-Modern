@@ -73,7 +73,7 @@ class UazAPIProvider implements MessageProvider {
   }
 
   isConfigured(): boolean {
-    return !!(this.apiUrl && this.instanceToken);
+    return !!this.apiUrl;
   }
 }
 

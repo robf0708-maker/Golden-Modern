@@ -1,5 +1,7 @@
 # Variáveis de ambiente — WhatsApp Multi-Instância (ETAPA 8)
 
+Plano de implementação (contexto e arquitetura): [docs/plano/ETAPA-8-WHATSAPP-MULTI-INSTANCIA.md](../../docs/plano/ETAPA-8-WHATSAPP-MULTI-INSTANCIA.md) (a partir da pasta `Golden-Modern-main/docs/`, sobe para a raiz do repositório).
+
 Para o painel de conexão WhatsApp funcionar, configure as seguintes variáveis:
 
 ## Local (.env)
