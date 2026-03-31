@@ -3851,10 +3851,20 @@ export async function registerRoutes(
         reminder1HourEnabled: z.boolean().default(true),
         confirmationEnabled: z.boolean().default(true),
         cancellationEnabled: z.boolean().default(true),
+        reactivation20daysEnabled: z.boolean().optional(),
+        reactivation30daysEnabled: z.boolean().optional(),
+        reactivation45daysEnabled: z.boolean().optional(),
+        predictedReturnEnabled: z.boolean().optional(),
         welcomeTemplate: z.string().optional().nullable(),
-        reminderTemplate: z.string().optional().nullable(),
+        reminder1DayTemplate: z.string().optional().nullable(),
+        reminder1HourTemplate: z.string().optional().nullable(),
         confirmationTemplate: z.string().optional().nullable(),
         cancellationTemplate: z.string().optional().nullable(),
+        reactivation20daysTemplate: z.string().optional().nullable(),
+        reactivation30daysTemplate: z.string().optional().nullable(),
+        reactivation45daysTemplate: z.string().optional().nullable(),
+        predictedReturnTemplate: z.string().optional().nullable(),
+        subscriptionExpiryTemplate: z.string().optional().nullable(),
       });
 
       const data = settingsSchema.parse(req.body);
