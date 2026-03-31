@@ -5254,6 +5254,29 @@ export async function registerRoutes(
     }
   });
 
+  // ============ Retry mensagens falhadas ============
+  app.post("/api/scheduled-messages/retry-failed", requireAuth, async (req, res) => {
+    try {
+      const barbershopId = req.session.barbershopId!;
+      const count = await storage.resetFailedMessages(barbershopId);
+      res.json({ success: true, reset: count, message: `${count} mensagem(ns) resetada(s) para reenvio` });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ============ Listar mensagens agendadas ============
+  app.get("/api/scheduled-messages", requireAuth, async (req, res) => {
+    try {
+      const barbershopId = req.session.barbershopId!;
+      const status = req.query.status as string | undefined;
+      const msgs = await storage.getScheduledMessages(barbershopId, status);
+      res.json(msgs);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.post("/api/admin/migrate-phones", requireAuth, async (req: any, res) => {
     try {
       const userId = req.session?.userId;

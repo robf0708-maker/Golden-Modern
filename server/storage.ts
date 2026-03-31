@@ -195,6 +195,7 @@ export interface IStorage {
   createScheduledMessage(message: InsertScheduledMessage): Promise<ScheduledMessage>;
   updateScheduledMessage(id: string, updates: Partial<InsertScheduledMessage>): Promise<ScheduledMessage | undefined>;
   deleteScheduledMessagesByAppointment(appointmentId: string): Promise<void>;
+  resetFailedMessages(barbershopId: string): Promise<number>;
   
   // Chatbot Settings
   getChatbotSettings(barbershopId: string): Promise<ChatbotSettings | undefined>;
@@ -1162,6 +1163,19 @@ export class DbStorage implements IStorage {
   async deleteScheduledMessagesByAppointment(appointmentId: string): Promise<void> {
     await db.delete(schema.scheduledMessages)
       .where(eq(schema.scheduledMessages.appointmentId, appointmentId));
+  }
+
+  async resetFailedMessages(barbershopId: string): Promise<number> {
+    const result = await db.update(schema.scheduledMessages)
+      .set({ status: 'pending', retryCount: 0, error: null } as any)
+      .where(
+        and(
+          eq(schema.scheduledMessages.barbershopId, barbershopId),
+          eq(schema.scheduledMessages.status, 'failed')
+        )
+      )
+      .returning();
+    return result.length;
   }
 
   // Chatbot Settings

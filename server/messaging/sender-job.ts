@@ -29,6 +29,12 @@ export async function processPendingMessages(): Promise<void> {
         }
 
         const chatbotConfig = await storage.getChatbotSettings(message.barbershopId);
+
+        if (!chatbotConfig?.whatsappConnected) {
+          console.log(`[MessageSender] WhatsApp desconectado para barbearia ${message.barbershopId}, aguardando conexão...`);
+          continue;
+        }
+
         const result = await provider.send(
           { to: message.phone, message: message.message },
           chatbotConfig?.uazapiInstanceToken ?? undefined
