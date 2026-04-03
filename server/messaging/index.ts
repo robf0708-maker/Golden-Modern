@@ -11,3 +11,4 @@ export {
   startFunnelJob,
   stopFunnelJob,
 } from './sender-job';
+export { startCampaignJob, stopCampaignJob } from './campaign-job';

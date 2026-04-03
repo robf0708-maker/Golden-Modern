@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import Layout from "@/components/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Plus, Search, Percent, DollarSign, Loader2, MoreVertical, Trash2, Edit, Camera, ChevronDown, ChevronUp } from "lucide-react";
-import { useBarbers, useCreateBarber, useUpdateBarber, useDeleteBarber } from "@/lib/api";
+import { useBarbers, useCreateBarber, useUpdateBarber, useDeleteBarber, useServices, useBarberServices, useSetBarberServices } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useUpload } from "@/hooks/use-upload";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -79,6 +79,9 @@ export default function Barbers() {
   const [breakSchedule, setBreakSchedule] = useState<BreakSchedule>(DEFAULT_BREAK_SCHEDULE);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Services configuration per barber: map of serviceId -> customPrice (empty string = use default)
+  const [selectedServiceIds, setSelectedServiceIds] = useState<Set<string>>(new Set());
+  const [customPrices, setCustomPrices] = useState<Record<string, string>>({});
 
   const { data: barbers = [], isLoading } = useBarbers();
   const createMutation = useCreateBarber();
@@ -86,6 +89,9 @@ export default function Barbers() {
   const deleteMutation = useDeleteBarber();
   const { toast } = useToast();
   const { uploadFile, isUploading } = useUpload();
+  const { data: allServices = [] } = useServices();
+  const { data: editingBarberServices = [] } = useBarberServices(editingBarber?.id ?? null);
+  const setBarberServicesMutation = useSetBarberServices();
 
   const resetForm = () => {
     setFormData({ name: "", phone: "", password: "", role: "", commissionType: "percentage", commissionValue: "50", active: true, allowAutoAssign: true, avatar: "" });
@@ -93,12 +99,29 @@ export default function Barbers() {
     setShowBreakSchedule(false);
     setAvatarPreview(null);
     setEditingBarber(null);
+    setSelectedServiceIds(new Set());
+    setCustomPrices({});
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   };
 
+  // Sync barber services into local state when loaded
+  useEffect(() => {
+    if (editingBarber && (editingBarberServices as any[]).length > 0) {
+      const ids = new Set<string>((editingBarberServices as any[]).map((bs: any) => bs.serviceId));
+      const prices: Record<string, string> = {};
+      (editingBarberServices as any[]).forEach((bs: any) => {
+        if (bs.customPrice != null) prices[bs.serviceId] = bs.customPrice;
+      });
+      setSelectedServiceIds(ids);
+      setCustomPrices(prices);
+    }
+  }, [editingBarberServices]);
+
   const openEditDialog = (barber: any) => {
+    setSelectedServiceIds(new Set());
+    setCustomPrices({});
     setEditingBarber(barber);
     setFormData({
       name: barber.name,
@@ -187,13 +210,24 @@ export default function Barbers() {
         data.password = formData.password;
       }
 
+      let savedBarberId: string;
       if (editingBarber) {
         await updateMutation.mutateAsync({ id: editingBarber.id, ...data });
+        savedBarberId = editingBarber.id;
         toast({ title: "Barbeiro atualizado com sucesso!" });
       } else {
-        await createMutation.mutateAsync(data);
+        const created = await createMutation.mutateAsync(data);
+        savedBarberId = (created as any).id;
         toast({ title: "Barbeiro cadastrado com sucesso!" });
       }
+
+      // Save barber services
+      const servicesPayload = Array.from(selectedServiceIds).map(serviceId => ({
+        serviceId,
+        customPrice: customPrices[serviceId] || null,
+      }));
+      await setBarberServicesMutation.mutateAsync({ barberId: savedBarberId, services: servicesPayload });
+
       setIsDialogOpen(false);
       resetForm();
     } catch (error: any) {
@@ -434,6 +468,48 @@ export default function Barbers() {
                     onCheckedChange={(checked) => setFormData({ ...formData, allowAutoAssign: checked })}
                   />
                 </div>
+                {/* Serviços do profissional */}
+                {(allServices as any[]).filter((s: any) => s.active !== false).length > 0 && (
+                  <div className="space-y-2">
+                    <Label>Serviços que este profissional realiza</Label>
+                    <p className="text-xs text-muted-foreground">Deixe todos desmarcados para que ele apareça em todos os serviços.</p>
+                    <div className="space-y-2 max-h-48 overflow-y-auto border border-border rounded p-2">
+                      {(allServices as any[]).filter((s: any) => s.active !== false).map((svc: any) => {
+                        const checked = selectedServiceIds.has(svc.id);
+                        return (
+                          <div key={svc.id} className="flex items-center gap-3">
+                            <input
+                              type="checkbox"
+                              id={`svc-${svc.id}`}
+                              checked={checked}
+                              onChange={(e) => {
+                                const next = new Set(selectedServiceIds);
+                                if (e.target.checked) next.add(svc.id);
+                                else { next.delete(svc.id); setCustomPrices(p => { const n = {...p}; delete n[svc.id]; return n; }); }
+                                setSelectedServiceIds(next);
+                              }}
+                              className="accent-primary"
+                            />
+                            <label htmlFor={`svc-${svc.id}`} className="flex-1 text-sm cursor-pointer">
+                              {svc.name} <span className="text-muted-foreground">— R$ {parseFloat(svc.price).toFixed(2)}</span>
+                            </label>
+                            {checked && (
+                              <Input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                placeholder="Preço custom"
+                                value={customPrices[svc.id] ?? ""}
+                                onChange={(e) => setCustomPrices(p => ({ ...p, [svc.id]: e.target.value }))}
+                                className="w-28 h-7 text-xs"
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 <DialogFooter>
                   <Button type="submit" data-testid="button-submit-barber" disabled={createMutation.isPending || updateMutation.isPending}>
                     {(createMutation.isPending || updateMutation.isPending) ? "Salvando..." : (editingBarber ? "Atualizar" : "Cadastrar")}

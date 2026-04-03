@@ -14,6 +14,7 @@ import Dashboard from "@/pages/Dashboard";
 import Schedule from "@/pages/Schedule";
 import POS from "@/pages/POS";
 import Clients from "@/pages/Clients";
+import Campanhas from "@/pages/Campanhas";
 import Services from "@/pages/Services";
 import Products from "@/pages/Products";
 import Packages from "@/pages/Packages";
@@ -64,6 +65,11 @@ function Router() {
       <Route path="/clients">
         <AuthGuard>
           <Clients />
+        </AuthGuard>
+      </Route>
+      <Route path="/campanhas">
+        <AuthGuard>
+          <Campanhas />
         </AuthGuard>
       </Route>
       <Route path="/services">

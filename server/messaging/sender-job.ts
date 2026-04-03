@@ -82,6 +82,8 @@ export async function processFunnelJobs(): Promise<void> {
   console.log('[FunnelJob] Iniciando job diário do funil...');
 
   try {
+    await storage.backfillClientsWithoutFunnelData();
+
     const allClients = await storage.getAllClientsForFunnelJob();
     const now = getNowAsUtcLocal();
     let processed = 0;
@@ -112,8 +114,10 @@ export async function processFunnelJobs(): Promise<void> {
 
         const alreadySentRecently = lastMsgDaysAgo !== null && lastMsgDaysAgo < 8;
 
+        if (!(settings?.funnelAutomationEnabled ?? false)) continue;
+
         if (!alreadySentRecently) {
-          if (days >= 20 && days < 30 && lastMsgAt === null && (settings?.reactivation20daysEnabled ?? true)) {
+          if (days >= 20 && days < 30 && lastMsgAt === null && (settings?.reactivation20daysEnabled ?? false)) {
             await scheduleFunnelMessage(
               client.barbershopId,
               client.id,
@@ -122,7 +126,7 @@ export async function processFunnelJobs(): Promise<void> {
               'reactivation_20days'
             );
             messagesScheduled++;
-          } else if (days >= 30 && days < 45 && lastMsgDaysAgo !== null && lastMsgDaysAgo >= 8 && (settings?.reactivation30daysEnabled ?? true)) {
+          } else if (days >= 30 && days < 45 && lastMsgDaysAgo !== null && lastMsgDaysAgo >= 8 && (settings?.reactivation30daysEnabled ?? false)) {
             await scheduleFunnelMessage(
               client.barbershopId,
               client.id,
@@ -131,7 +135,7 @@ export async function processFunnelJobs(): Promise<void> {
               'reactivation_30days'
             );
             messagesScheduled++;
-          } else if (days >= 45 && lastMsgDaysAgo !== null && lastMsgDaysAgo >= 8 && (settings?.reactivation45daysEnabled ?? true)) {
+          } else if (days >= 45 && lastMsgDaysAgo !== null && lastMsgDaysAgo >= 8 && (settings?.reactivation45daysEnabled ?? false)) {
             await scheduleFunnelMessage(
               client.barbershopId,
               client.id,
@@ -143,7 +147,7 @@ export async function processFunnelJobs(): Promise<void> {
           }
         }
 
-        if (client.daysUntilPredictedVisit !== null && (settings?.predictedReturnEnabled ?? true)) {
+        if (client.daysUntilPredictedVisit !== null && (settings?.predictedReturnEnabled ?? false)) {
           const daysUntil = client.daysUntilPredictedVisit;
 
           if (daysUntil >= 0 && daysUntil <= 3) {

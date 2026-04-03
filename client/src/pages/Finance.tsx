@@ -47,7 +47,7 @@ import {
   ChevronRight
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
-import { format, startOfMonth, endOfMonth } from "date-fns";
+import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { 
   useCurrentCashRegister, 
@@ -68,6 +68,11 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Info } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { DreExecutiveCards } from "@/components/dre/DreExecutiveCards";
+import { DreRevenueChart } from "@/components/dre/DreRevenueChart";
+import { DreAlerts } from "@/components/dre/DreAlerts";
+import { DreServiceRevenue } from "@/components/dre/DreServiceRevenue";
+import { DreFunnelStrip } from "@/components/dre/DreFunnelStrip";
 
 const EXPENSE_CATEGORIES = [
   { value: "aluguel", label: "Aluguel", icon: Building },
@@ -186,16 +191,19 @@ export default function Finance() {
   const [historyDateFilter, setHistoryDateFilter] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [expandedRegisterId, setExpandedRegisterId] = useState<string | null>(null);
   
-  const [dreFilter, setDreFilter] = useState<'today' | 'month' | 'custom'>('today');
+  const [dreFilter, setDreFilter] = useState<'today' | 'week' | 'month' | 'custom'>('today');
   const [dreStartDate, setDreStartDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [dreEndDate, setDreEndDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   
-  const handleDreFilterChange = (filter: 'today' | 'month' | 'custom') => {
+  const handleDreFilterChange = (filter: 'today' | 'week' | 'month' | 'custom') => {
     setDreFilter(filter);
     const today = new Date();
     if (filter === 'today') {
       setDreStartDate(format(today, 'yyyy-MM-dd'));
       setDreEndDate(format(today, 'yyyy-MM-dd'));
+    } else if (filter === 'week') {
+      setDreStartDate(format(startOfWeek(today, { locale: ptBR, weekStartsOn: 1 }), 'yyyy-MM-dd'));
+      setDreEndDate(format(endOfWeek(today, { locale: ptBR, weekStartsOn: 1 }), 'yyyy-MM-dd'));
     } else if (filter === 'month') {
       setDreStartDate(format(startOfMonth(today), 'yyyy-MM-dd'));
       setDreEndDate(format(endOfMonth(today), 'yyyy-MM-dd'));
@@ -922,6 +930,15 @@ export default function Finance() {
                       Hoje
                     </Button>
                     <Button
+                      variant={dreFilter === 'week' ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => handleDreFilterChange('week')}
+                      data-testid="button-filter-week"
+                    >
+                      <Calendar className="h-4 w-4 mr-1" />
+                      Semana
+                    </Button>
+                    <Button
                       variant={dreFilter === 'month' ? 'default' : 'outline'}
                       size="sm"
                       onClick={() => handleDreFilterChange('month')}
@@ -965,43 +982,21 @@ export default function Finance() {
 
             {dreData?.summary ? (
               <>
-                {/* RESUMO FINANCEIRO - Os 4 números principais */}
-                <Card className="border-primary/20 bg-gradient-to-br from-primary/5 to-transparent">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-lg flex items-center gap-2">
-                      <DollarSign className="h-5 w-5 text-primary" />
-                      Resumo Financeiro
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                      <div className="p-4 rounded-lg bg-green-500/10 border border-green-500/20">
-                        <p className="text-xs text-muted-foreground">(+) Faturamento Bruto</p>
-                        <p className="text-2xl font-bold text-green-500" data-testid="text-gross-total">
-                          R$ {(dreData.summary.grossTotal || 0).toFixed(2)}
-                        </p>
-                      </div>
-                      <div className="p-4 rounded-lg bg-orange-500/10 border border-orange-500/20">
-                        <p className="text-xs text-muted-foreground">(-) Taxas Administrativas</p>
-                        <p className="text-2xl font-bold text-orange-500" data-testid="text-total-fees">
-                          R$ {(dreData.summary.totalFees || 0).toFixed(2)}
-                        </p>
-                      </div>
-                      <div className="p-4 rounded-lg bg-purple-500/10 border border-purple-500/20">
-                        <p className="text-xs text-muted-foreground">(-) Total Comissões</p>
-                        <p className="text-2xl font-bold text-purple-500" data-testid="text-total-commissions">
-                          R$ {(dreData.summary.totalCommissions || 0).toFixed(2)}
-                        </p>
-                      </div>
-                      <div className={`p-4 rounded-lg border ${(dreData.summary.netRealBalance || 0) >= 0 ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
-                        <p className="text-xs text-muted-foreground">(=) Saldo Líquido Real</p>
-                        <p className={`text-2xl font-bold ${(dreData.summary.netRealBalance || 0) >= 0 ? 'text-emerald-500' : 'text-red-500'}`} data-testid="text-net-real-balance">
-                          R$ {(dreData.summary.netRealBalance || 0).toFixed(2)}
-                        </p>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
+                <DreExecutiveCards summary={dreData.summary} />
+
+                {dreData.alerts && dreData.alerts.length > 0 && (
+                  <DreAlerts alerts={dreData.alerts} />
+                )}
+
+                {dreData.chart?.points && dreData.chart.points.length > 0 && (
+                  <DreRevenueChart points={dreData.chart.points} />
+                )}
+
+                <DreServiceRevenue rows={dreData.serviceRevenue ?? []} />
+
+                {dreData.funnelSnapshot && (
+                  <DreFunnelStrip funnel={dreData.funnelSnapshot} />
+                )}
 
                 {/* PAINEL DE BARBEIROS */}
                 <Card className="border-border/50 bg-card/50">

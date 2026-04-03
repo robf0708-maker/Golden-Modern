@@ -365,6 +365,7 @@ export const notificationSettings = pgTable("notification_settings", {
   subscriptionExpiryEnabled: boolean("subscription_expiry_enabled").notNull().default(true),
   subscriptionExpiryTemplate: text("subscription_expiry_template"),
   // Funil de Reativação
+  funnelAutomationEnabled: boolean("funnel_automation_enabled").notNull().default(false),
   reactivation20daysEnabled: boolean("reactivation_20days_enabled").notNull().default(true),
   reactivation20daysTemplate: text("reactivation_20days_template"),
   reactivation30daysEnabled: boolean("reactivation_30days_enabled").notNull().default(true),
@@ -373,6 +374,9 @@ export const notificationSettings = pgTable("notification_settings", {
   reactivation45daysTemplate: text("reactivation_45days_template"),
   predictedReturnEnabled: boolean("predicted_return_enabled").notNull().default(true),
   predictedReturnTemplate: text("predicted_return_template"),
+  // Avisos para o Profissional
+  professionalBookingEnabled: boolean("professional_booking_enabled").notNull().default(false),
+  professionalCancellationEnabled: boolean("professional_cancellation_enabled").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -557,3 +561,59 @@ export const refundNotifications = pgTable("refund_notifications", {
 export const insertRefundNotificationSchema = createInsertSchema(refundNotifications).omit({ id: true, createdAt: true });
 export type InsertRefundNotification = z.infer<typeof insertRefundNotificationSchema>;
 export type RefundNotification = typeof refundNotifications.$inferSelect;
+
+// ============ CAMPANHAS ============
+
+export const campaigns = pgTable("campaigns", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  barbershopId: varchar("barbershop_id")
+    .notNull()
+    .references(() => barbershops.id, { onDelete: "cascade" }),
+  name: text("name"),
+  message: text("message").notNull(),
+  status: text("status").notNull().default("sending"), // sending | done | stopped
+  totalRecipients: integer("total_recipients").notNull().default(0),
+  sentCount: integer("sent_count").notNull().default(0),
+  failedCount: integer("failed_count").notNull().default(0),
+  delayMinSeconds: integer("delay_min_seconds").notNull().default(15),
+  delayMaxSeconds: integer("delay_max_seconds").notNull().default(45),
+  dailyLimit: integer("daily_limit").notNull().default(100),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+});
+
+export const campaignRecipients = pgTable("campaign_recipients", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  campaignId: varchar("campaign_id")
+    .notNull()
+    .references(() => campaigns.id, { onDelete: "cascade" }),
+  barbershopId: varchar("barbershop_id")
+    .notNull()
+    .references(() => barbershops.id, { onDelete: "cascade" }),
+  clientId: varchar("client_id")
+    .references(() => clients.id, { onDelete: "set null" }),
+  phone: text("phone").notNull(),
+  clientName: text("client_name").notNull(),
+  renderedMessage: text("rendered_message").notNull(),
+  status: text("status").notNull().default("pending"), // pending | sent | failed
+  error: text("error"),
+  sentAt: timestamp("sent_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type Campaign = typeof campaigns.$inferSelect;
+export type InsertCampaign = typeof campaigns.$inferInsert;
+export type CampaignRecipient = typeof campaignRecipients.$inferSelect;
+export type InsertCampaignRecipient = typeof campaignRecipients.$inferInsert;
+
+// Barber Services (serviços que cada profissional oferece, com preço opcional)
+export const barberServices = pgTable("barber_services", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  barberId: varchar("barber_id").notNull().references(() => barbers.id, { onDelete: "cascade" }),
+  serviceId: varchar("service_id").notNull().references(() => services.id, { onDelete: "cascade" }),
+  customPrice: decimal("custom_price", { precision: 10, scale: 2 }), // null = usa preço padrão do serviço
+});
+
+export const insertBarberServiceSchema = createInsertSchema(barberServices).omit({ id: true });
+export type InsertBarberService = z.infer<typeof insertBarberServiceSchema>;
+export type BarberService = typeof barberServices.$inferSelect;

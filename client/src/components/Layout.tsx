@@ -1,20 +1,21 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import { 
-  LayoutDashboard, 
-  Calendar, 
-  Scissors, 
-  Users, 
-  ShoppingBag, 
-  Package, 
-  CreditCard, 
+  LayoutDashboard,
+  Calendar,
+  Scissors,
+  Users,
+  ShoppingBag,
+  Package,
+  CreditCard,
   DollarSign,
   Percent,
   Settings,
   LogOut,
   Menu,
   X,
-  RefreshCw
+  RefreshCw,
+  Megaphone,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -29,6 +30,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { name: "Agenda", href: "/schedule", icon: Calendar },
     { name: "Comanda/POS", href: "/pos", icon: CreditCard },
     { name: "Clientes", href: "/clients", icon: Users },
+    { name: "Campanhas", href: "/campanhas", icon: Megaphone },
     { name: "Barbeiros", href: "/barbers", icon: Users },
     { name: "Serviços", href: "/services", icon: Scissors },
     { name: "Produtos", href: "/products", icon: ShoppingBag },

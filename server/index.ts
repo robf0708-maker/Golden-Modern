@@ -5,7 +5,7 @@ import { createServer } from "http";
 import session from "express-session";
 import ConnectPgSimple from "connect-pg-simple";
 import pg from "pg";
-import { startMessageSenderJob, startFunnelJob } from "./messaging";
+import { startMessageSenderJob, startFunnelJob, startCampaignJob } from "./messaging";
 
 const app = express();
 const httpServer = createServer(app);
@@ -135,6 +135,9 @@ app.use((req, res, next) => {
 
       startFunnelJob();
       log('Funnel job started (daily)');
+
+      startCampaignJob(30000);
+      log('Campaign job started');
     },
   );
 })();

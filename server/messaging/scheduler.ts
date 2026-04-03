@@ -10,7 +10,8 @@ export async function scheduleAppointmentNotifications(
   clientName: string,
   barberName: string,
   serviceName: string,
-  appointmentStart: Date
+  appointmentStart: Date,
+  barberPhone?: string
 ) {
   console.log(`[Scheduler] Agendando notificações para agendamento ${appointmentId}`);
   console.log(`[Scheduler] Cliente: ${clientName} (${clientPhone}), Barbeiro: ${barberName}, Serviço: ${serviceName}`);
@@ -107,6 +108,23 @@ export async function scheduleAppointmentNotifications(
       status: 'pending',
     });
   }
+
+  // Aviso para o profissional
+  if (barberPhone && (settings?.professionalBookingEnabled ?? false)) {
+    const professionalTemplate = getTemplate('professional_booking');
+    const professionalMessage = renderTemplate(professionalTemplate, variables);
+    await storage.createScheduledMessage({
+      barbershopId,
+      clientId: null,
+      appointmentId,
+      phone: barberPhone,
+      message: professionalMessage,
+      type: 'professional_booking',
+      scheduledFor: nowLocal,
+      status: 'pending',
+    });
+    console.log(`[Scheduler] Aviso de agendamento enviado ao profissional ${barberName} (${barberPhone})`);
+  }
 }
 
 export async function scheduleWelcomeMessage(
@@ -161,12 +179,12 @@ export async function scheduleCancellationMessage(
   clientPhone: string,
   clientName: string,
   appointmentDate: string,
-  appointmentTime: string
+  appointmentTime: string,
+  barberPhone?: string,
+  barberName?: string
 ) {
   const settings = await storage.getNotificationSettings(barbershopId);
-  
-  if (!(settings?.cancellationEnabled ?? true)) return;
-  
+
   const barbershop = await storage.getBarbershop(barbershopId);
   if (!barbershop) return;
 
@@ -175,23 +193,42 @@ export async function scheduleCancellationMessage(
   const variables: TemplateVariables = {
     clientName,
     barbershopName: barbershop.name,
+    barberName,
     appointmentDate,
     appointmentTime,
   };
 
-  const template = getTemplate('appointment_cancelled', settings?.cancellationTemplate || undefined);
-  const message = renderTemplate(template, variables);
+  if (settings?.cancellationEnabled ?? true) {
+    const template = getTemplate('appointment_cancelled', settings?.cancellationTemplate || undefined);
+    const message = renderTemplate(template, variables);
+    await storage.createScheduledMessage({
+      barbershopId,
+      clientId: null,
+      appointmentId: null,
+      phone: clientPhone,
+      message,
+      type: 'appointment_cancelled',
+      scheduledFor: getNowAsUtcLocal(),
+      status: 'pending',
+    });
+  }
 
-  await storage.createScheduledMessage({
-    barbershopId,
-    clientId: null,
-    appointmentId: null,
-    phone: clientPhone,
-    message,
-    type: 'appointment_cancelled',
-    scheduledFor: getNowAsUtcLocal(),
-    status: 'pending',
-  });
+  // Aviso para o profissional
+  if (barberPhone && (settings?.professionalCancellationEnabled ?? false)) {
+    const professionalTemplate = getTemplate('professional_cancellation');
+    const professionalMessage = renderTemplate(professionalTemplate, variables);
+    await storage.createScheduledMessage({
+      barbershopId,
+      clientId: null,
+      appointmentId: null,
+      phone: barberPhone,
+      message: professionalMessage,
+      type: 'professional_cancellation',
+      scheduledFor: getNowAsUtcLocal(),
+      status: 'pending',
+    });
+    console.log(`[Scheduler] Aviso de cancelamento enviado ao profissional ${barberName} (${barberPhone})`);
+  }
 }
 
 export async function scheduleFunnelMessage(

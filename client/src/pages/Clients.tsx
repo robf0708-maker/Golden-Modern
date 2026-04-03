@@ -1,12 +1,12 @@
 import { useState, useMemo } from "react";
 import Layout from "@/components/Layout";
-import { 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableHead, 
-  TableHeader, 
-  TableRow 
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
 } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -32,28 +32,43 @@ import {
 } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { 
-  Search, 
-  Plus, 
-  Filter, 
-  MoreHorizontal, 
-  Phone, 
+import {
+  Search,
+  Plus,
+  Filter,
+  MoreHorizontal,
+  Phone,
   Mail,
   CalendarDays,
   Loader2,
   Package,
+  PackageX,
   Gift,
   Users,
   AlertCircle,
+  AlertTriangle,
   Clock,
   Scissors,
   ShoppingBag,
   X,
   ChevronRight,
   UserX,
-  Calendar
+  UserMinus,
+  UserCheck,
+  Calendar,
+  CalendarX,
+  CalendarClock,
+  TrendingUp,
+  Repeat2,
+  Star,
+  Zap,
+  MessageCircle,
+  BarChart3,
+  List,
 } from "lucide-react";
-import { useClients, useCreateClient, useDeleteClient, usePackages, useCreateClientPackage, useClientPackages, useClientHistory } from "@/lib/api";
+
+const CLIENT_ABSENCE_DAYS = 30;
+import { useClients, useCreateClient, useDeleteClient, usePackages, useCreateClientPackage, useClientPackages, useClientHistory, useClientsFunnelDashboard } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -79,8 +94,15 @@ export default function Clients() {
     email: "",
     notes: "",
   });
+  const [mainTab, setMainTab] = useState("funil");
+  const [funnelSheet, setFunnelSheet] = useState<{ open: boolean; title: string; clients: any[] }>({
+    open: false,
+    title: "",
+    clients: [],
+  });
 
   const { data: clients = [], isLoading } = useClients();
+  const { data: funnelDashboard, isLoading: loadingFunnel } = useClientsFunnelDashboard();
   const { data: packages = [] } = usePackages();
   const { data: clientPackages = [] } = useClientPackages();
   const { data: clientHistory = [], isLoading: loadingHistory } = useClientHistory(detailClient?.id);
@@ -119,6 +141,12 @@ export default function Clients() {
         isInactive: client.clientStatus === 'cliente_inativo',
         clientStatus: client.clientStatus || 'novo_cliente',
         totalVisits: client.totalVisits || 0,
+        hasNoLastVisit: !client.lastVisitAt,
+        hasLongAbsence: (() => {
+          if (!client.lastVisitAt || client.clientStatus === 'cliente_plano') return false;
+          const lv = new Date(client.lastVisitAt);
+          return differenceInDays(new Date(), lv) > CLIENT_ABSENCE_DAYS;
+        })(),
       };
     });
   }, [clients, clientPackages]);
@@ -131,8 +159,13 @@ export default function Clients() {
       return daysToExpire <= 7 && daysToExpire > 0 && cp.quantityRemaining > 0;
     }).length;
     const inactive = clientsWithMetrics.filter((c: any) => c.isInactive).length;
+    const noLastVisit = clientsWithMetrics.filter((c: any) => c.hasNoLastVisit).length;
+    const longAbsence = clientsWithMetrics.filter((c: any) => c.hasLongAbsence).length;
+    const staleStatus = clientsWithMetrics.filter(
+      (c: any) => c.hasLongAbsence && c.clientStatus !== 'cliente_inativo'
+    ).length;
 
-    return { total, withPackages, expiringPackages, inactive };
+    return { total, withPackages, expiringPackages, inactive, noLastVisit, longAbsence, staleStatus };
   }, [clientsWithMetrics, clientPackages]);
 
   const getStatusBadge = (status: string) => {
@@ -165,6 +198,10 @@ export default function Clients() {
       result = result.filter((c: any) => c.hasActivePackages);
     } else if (filterTab === "inactive") {
       result = result.filter((c: any) => c.isInactive);
+    } else if (filterTab === "no_last_visit") {
+      result = result.filter((c: any) => c.hasNoLastVisit);
+    } else if (filterTab === "long_absence") {
+      result = result.filter((c: any) => c.hasLongAbsence);
     }
 
     return result;
@@ -203,6 +240,16 @@ export default function Clients() {
     setIsDetailOpen(true);
   };
 
+  const openFunnelGroup = (title: string, clients: any[]) => {
+    setFunnelSheet({ open: true, title, clients });
+  };
+
+  const whatsappLink = (phone: string) => {
+    const digits = phone.replace(/\D/g, "");
+    const number = digits.startsWith("55") ? digits : `55${digits}`;
+    return `https://wa.me/${number}`;
+  };
+
   if (isLoading) {
     return (
       <Layout>
@@ -219,9 +266,12 @@ export default function Clients() {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <h1 className="text-3xl font-serif font-bold text-foreground">Clientes</h1>
-            <p className="text-muted-foreground">Gerencie sua base de clientes, pacotes e histórico.</p>
+            <p className="text-muted-foreground max-w-2xl">
+              Gerencie sua base de clientes, pacotes e histórico. O status do funil e a última visita atualizam com
+              atendimentos concluídos na agenda e comandas fechadas; use &quot;Recalcular&quot; no painel se os números estiverem defasados.
+            </p>
           </div>
-          
+
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
             <DialogTrigger asChild>
               <Button className="bg-primary text-primary-foreground hover:bg-primary/90" data-testid="button-new-client">
@@ -287,16 +337,202 @@ export default function Clients() {
           </Dialog>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Tabs value={mainTab} onValueChange={setMainTab} className="flex flex-col flex-1 overflow-hidden gap-4">
+          <TabsList className="bg-background/50 w-fit">
+            <TabsTrigger value="funil" className="flex items-center gap-2">
+              <BarChart3 className="h-4 w-4" /> Funil
+            </TabsTrigger>
+            <TabsTrigger value="lista" className="flex items-center gap-2">
+              <List className="h-4 w-4" /> Lista
+            </TabsTrigger>
+          </TabsList>
+
+          {/* ============ FUNIL TAB ============ */}
+          <TabsContent value="funil" className="flex-1 overflow-auto space-y-6 mt-0">
+            {loadingFunnel ? (
+              <div className="flex items-center justify-center py-16">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              </div>
+            ) : (
+              <>
+                {/* Zona Azul — Base Saudável */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-1 w-6 rounded-full bg-blue-500" />
+                    <h2 className="text-sm font-semibold text-blue-400 uppercase tracking-wider">Base Saudável</h2>
+                    <p className="text-xs text-muted-foreground">— dinheiro entrando</p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {[
+                      {
+                        key: "ativos",
+                        label: "Clientes Ativos",
+                        sub: "últimos 30 dias",
+                        icon: TrendingUp,
+                      },
+                      {
+                        key: "recorrentes",
+                        label: "Recorrentes",
+                        sub: "3+ visitas",
+                        icon: Repeat2,
+                      },
+                      {
+                        key: "comPlano",
+                        label: "Com Plano Ativo",
+                        sub: "assinantes",
+                        icon: Star,
+                      },
+                    ].map(({ key, label, sub, icon: Icon }) => {
+                      const group = funnelDashboard?.[key as keyof typeof funnelDashboard] as any;
+                      return (
+                        <Card
+                          key={key}
+                          className="bg-blue-500/5 border-blue-500/20 hover:border-blue-500/50 transition-colors cursor-pointer"
+                          onClick={() => openFunnelGroup(label, group?.clients ?? [])}
+                        >
+                          <CardContent className="p-4">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="text-3xl font-bold text-blue-400">{group?.count ?? 0}</p>
+                                <p className="text-sm font-medium">{label}</p>
+                                <p className="text-xs text-muted-foreground">{sub}</p>
+                              </div>
+                              <div className="p-3 rounded-full bg-blue-500/10">
+                                <Icon className="h-6 w-6 text-blue-400" />
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Zona Amarela — Oportunidade */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-1 w-6 rounded-full bg-amber-500" />
+                    <h2 className="text-sm font-semibold text-amber-400 uppercase tracking-wider">Oportunidade</h2>
+                    <p className="text-xs text-muted-foreground">— onde está o crescimento agora</p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {[
+                      {
+                        key: "devemVoltar",
+                        label: "Devem Voltar",
+                        sub: "15–25 dias sem visita",
+                        icon: Clock,
+                        color: "amber",
+                      },
+                      {
+                        key: "emRisco",
+                        label: "Em Risco",
+                        sub: "25–35 dias sem visita",
+                        icon: AlertTriangle,
+                        color: "amber",
+                      },
+                      {
+                        key: "elegiveisPlano",
+                        label: "Elegíveis para Plano",
+                        sub: "frequentes sem plano",
+                        icon: Zap,
+                        color: "amber",
+                      },
+                    ].map(({ key, label, sub, icon: Icon }) => {
+                      const group = funnelDashboard?.[key as keyof typeof funnelDashboard] as any;
+                      return (
+                        <Card
+                          key={key}
+                          className="bg-amber-500/5 border-amber-500/20 hover:border-amber-500/50 transition-colors cursor-pointer"
+                          onClick={() => openFunnelGroup(label, group?.clients ?? [])}
+                        >
+                          <CardContent className="p-4">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="text-3xl font-bold text-amber-400">{group?.count ?? 0}</p>
+                                <p className="text-sm font-medium">{label}</p>
+                                <p className="text-xs text-muted-foreground">{sub}</p>
+                              </div>
+                              <div className="p-3 rounded-full bg-amber-500/10">
+                                <Icon className="h-6 w-6 text-amber-400" />
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Zona Vermelha — Problema */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-1 w-6 rounded-full bg-red-500" />
+                    <h2 className="text-sm font-semibold text-red-400 uppercase tracking-wider">Problema</h2>
+                    <p className="text-xs text-muted-foreground">— dinheiro perdido</p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {[
+                      {
+                        key: "inativos30d",
+                        label: "Inativos 30d+",
+                        sub: "mais de 30 dias sem vir",
+                        icon: UserMinus,
+                      },
+                      {
+                        key: "inativos45d",
+                        label: "Inativos 45d+",
+                        sub: "mais de 45 dias sem vir",
+                        icon: UserX,
+                      },
+                      {
+                        key: "pacotesExpirados",
+                        label: "Pacotes Expirados",
+                        sub: "expirou sem usar tudo",
+                        icon: PackageX,
+                      },
+                    ].map(({ key, label, sub, icon: Icon }) => {
+                      const group = funnelDashboard?.[key as keyof typeof funnelDashboard] as any;
+                      return (
+                        <Card
+                          key={key}
+                          className="bg-red-500/5 border-red-500/20 hover:border-red-500/50 transition-colors cursor-pointer"
+                          onClick={() => openFunnelGroup(label, group?.clients ?? [])}
+                        >
+                          <CardContent className="p-4">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="text-3xl font-bold text-red-400">{group?.count ?? 0}</p>
+                                <p className="text-sm font-medium">{label}</p>
+                                <p className="text-xs text-muted-foreground">{sub}</p>
+                              </div>
+                              <div className="p-3 rounded-full bg-red-500/10">
+                                <Icon className="h-6 w-6 text-red-400" />
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
+          </TabsContent>
+
+          {/* ============ LISTA TAB ============ */}
+          <TabsContent value="lista" className="flex flex-col flex-1 overflow-hidden mt-0">
+
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
           <Card className="bg-card/50 border-border hover:border-primary/30 transition-colors cursor-pointer" onClick={() => setFilterTab("all")} data-testid="stat-total-clients">
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-primary/10">
                   <Users className="h-5 w-5 text-primary" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="text-2xl font-bold">{stats.total}</p>
-                  <p className="text-xs text-muted-foreground">Total de Clientes</p>
+                  <p className="text-xs text-muted-foreground leading-tight">Total de Clientes</p>
                 </div>
               </div>
             </CardContent>
@@ -308,9 +544,9 @@ export default function Clients() {
                 <div className="p-2 rounded-lg bg-green-500/10">
                   <Package className="h-5 w-5 text-green-500" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="text-2xl font-bold text-green-500">{stats.withPackages}</p>
-                  <p className="text-xs text-muted-foreground">Com Pacotes Ativos</p>
+                  <p className="text-xs text-muted-foreground leading-tight">Com Pacotes Ativos</p>
                 </div>
               </div>
             </CardContent>
@@ -322,23 +558,75 @@ export default function Clients() {
                 <div className="p-2 rounded-lg bg-amber-500/10">
                   <AlertCircle className="h-5 w-5 text-amber-500" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="text-2xl font-bold text-amber-500">{stats.expiringPackages}</p>
-                  <p className="text-xs text-muted-foreground">Pacotes Expirando</p>
+                  <p className="text-xs text-muted-foreground leading-tight">Pacotes Expirando</p>
                 </div>
               </div>
             </CardContent>
           </Card>
           
-          <Card className="bg-card/50 border-border hover:border-red-500/30 transition-colors cursor-pointer" onClick={() => setFilterTab("inactive")} data-testid="stat-inactive">
+          <Card
+            className="bg-card/50 border-border hover:border-red-500/30 transition-colors cursor-pointer"
+            onClick={() => setFilterTab("inactive")}
+            title="Clientes com status Inativo no funil (gravado no cadastro)"
+            data-testid="stat-inactive"
+          >
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-red-500/10">
                   <UserX className="h-5 w-5 text-red-500" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="text-2xl font-bold text-red-500">{stats.inactive}</p>
-                  <p className="text-xs text-muted-foreground">Clientes Inativos</p>
+                  <p className="text-xs text-muted-foreground leading-tight">Inativos (funil)</p>
+                  <p className="text-[10px] text-muted-foreground/80 leading-tight mt-0.5">Status no sistema</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card
+            className="bg-card/50 border-border hover:border-orange-500/30 transition-colors cursor-pointer"
+            onClick={() => setFilterTab("no_last_visit")}
+            title="Cadastros sem data de última visita registrada"
+            data-testid="stat-no-last-visit"
+          >
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-orange-500/10">
+                  <CalendarX className="h-5 w-5 text-orange-500" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-2xl font-bold text-orange-500">{stats.noLastVisit}</p>
+                  <p className="text-xs text-muted-foreground leading-tight">Sem última visita</p>
+                  <p className="text-[10px] text-muted-foreground/80 leading-tight mt-0.5">Dado ausente</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card
+            className="bg-card/50 border-border hover:border-rose-500/30 transition-colors cursor-pointer"
+            onClick={() => setFilterTab("long_absence")}
+            title={`Última visita há mais de ${CLIENT_ABSENCE_DAYS} dias (exceto plano). Inclui quem o funil ainda não marcou como inativo.`}
+            data-testid="stat-long-absence"
+          >
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-rose-500/10">
+                  <CalendarClock className="h-5 w-5 text-rose-500" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-2xl font-bold text-rose-500">{stats.longAbsence}</p>
+                  <p className="text-xs text-muted-foreground leading-tight">Sem visita {CLIENT_ABSENCE_DAYS}+ dias</p>
+                  {stats.staleStatus > 0 ? (
+                    <p className="text-[10px] text-amber-500/90 leading-tight mt-0.5">
+                      {stats.staleStatus} com status divergente — recalcule no painel
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-muted-foreground/80 leading-tight mt-0.5">Por data registrada</p>
+                  )}
                 </div>
               </div>
             </CardContent>
@@ -358,11 +646,13 @@ export default function Clients() {
               />
             </div>
             
-            <Tabs value={filterTab} onValueChange={setFilterTab} className="w-auto">
-              <TabsList className="bg-background/50">
+            <Tabs value={filterTab} onValueChange={setFilterTab} className="w-auto max-w-full overflow-x-auto">
+              <TabsList className="bg-background/50 flex-wrap h-auto gap-1 py-1">
                 <TabsTrigger value="all" data-testid="tab-all">Todos</TabsTrigger>
                 <TabsTrigger value="with_packages" data-testid="tab-with-packages">Com Pacotes</TabsTrigger>
-                <TabsTrigger value="inactive" data-testid="tab-inactive">Inativos</TabsTrigger>
+                <TabsTrigger value="inactive" data-testid="tab-inactive">Inativos (funil)</TabsTrigger>
+                <TabsTrigger value="no_last_visit" data-testid="tab-no-last-visit">Sem últ. visita</TabsTrigger>
+                <TabsTrigger value="long_absence" data-testid="tab-long-absence">{CLIENT_ABSENCE_DAYS}+ dias</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
@@ -375,8 +665,8 @@ export default function Clients() {
                   <TableHead>Contato</TableHead>
                   <TableHead>Pacotes</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Visitas</TableHead>
-                  <TableHead>Última visita</TableHead>
+                  <TableHead title="Atendimentos concluídos na agenda">Visitas (agenda)</TableHead>
+                  <TableHead title="Última data registrada (agenda ou comanda)">Última visita</TableHead>
                   <TableHead className="w-[50px]"></TableHead>
                 </TableRow>
               </TableHeader>
@@ -477,7 +767,69 @@ export default function Clients() {
             </Table>
           </div>
         </div>
+          </TabsContent>
+        </Tabs>
       </div>
+
+      {/* Sheet: Funil Group Detail */}
+      <Sheet open={funnelSheet.open} onOpenChange={(open) => setFunnelSheet(s => ({ ...s, open }))}>
+        <SheetContent className="w-full sm:max-w-lg bg-card border-border overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>{funnelSheet.title}</SheetTitle>
+            <SheetDescription>{funnelSheet.clients.length} cliente{funnelSheet.clients.length !== 1 ? "s" : ""} neste grupo</SheetDescription>
+          </SheetHeader>
+          <div className="mt-4 space-y-2">
+            {funnelSheet.clients.length === 0 ? (
+              <div className="py-10 text-center text-muted-foreground">
+                <Users className="h-10 w-10 mx-auto mb-2 opacity-40" />
+                <p className="text-sm">Nenhum cliente neste grupo</p>
+              </div>
+            ) : (
+              funnelSheet.clients.map((c: any) => (
+                <div key={c.id} className="flex items-center justify-between p-3 rounded-lg border border-border bg-background/30 gap-2">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <Avatar className="h-9 w-9 border border-border shrink-0">
+                      <AvatarFallback className="bg-primary/10 text-primary font-bold text-xs">
+                        {c.name.substring(0, 2).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0">
+                      <p className="font-medium text-sm truncate">{c.name}</p>
+                      <p className="text-xs text-muted-foreground flex items-center gap-1">
+                        <Phone className="h-3 w-3" /> {c.phone}
+                      </p>
+                      {c.daysSinceLastVisit !== null && (
+                        <p className="text-xs text-muted-foreground">
+                          {c.daysSinceLastVisit === 0 ? "Hoje" : `${c.daysSinceLastVisit}d sem visita`}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex gap-1 shrink-0">
+                    <a href={whatsappLink(c.phone)} target="_blank" rel="noopener noreferrer">
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-green-500 hover:text-green-400 hover:bg-green-500/10" title="WhatsApp">
+                        <MessageCircle className="h-4 w-4" />
+                      </Button>
+                    </a>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-primary hover:bg-primary/10"
+                      title="Vender Pacote"
+                      onClick={() => {
+                        setSelectedClient(c);
+                        setIsPackageDialogOpen(true);
+                      }}
+                    >
+                      <Gift className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <Sheet open={isDetailOpen} onOpenChange={setIsDetailOpen}>
         <SheetContent className="w-full sm:max-w-lg bg-card border-border overflow-y-auto">

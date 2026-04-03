@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
-import { eq, and, desc, gte, lte, sql, inArray } from "drizzle-orm";
+import { eq, and, desc, gte, lte, sql, inArray, isNotNull, isNull } from "drizzle-orm";
 import * as schema from "@shared/schema";
 import { getNowAsUtcLocal } from "./utils/timezone";
 import type {
@@ -29,6 +29,9 @@ import type {
   SubscriptionPayment, InsertSubscriptionPayment,
   FixedExpense, InsertFixedExpense,
   RefundNotification, InsertRefundNotification,
+  Campaign, InsertCampaign,
+  CampaignRecipient, InsertCampaignRecipient,
+  BarberService, InsertBarberService,
 } from "@shared/schema";
 
 const isRemoteDb = process.env.DATABASE_URL && !process.env.DATABASE_URL.includes('localhost') && !process.env.DATABASE_URL.includes('127.0.0.1');
@@ -68,6 +71,40 @@ export interface ClientForFunnelJob {
   daysUntilPredictedVisit: number | null;
 }
 
+export interface ClientCampaignFilter {
+  mode: 'all' | 'funnel' | 'inactive' | 'manual';
+  funnelStatuses?: string[];
+  inactiveDays?: number;
+  clientIds?: string[];
+}
+
+export interface FunnelClient {
+  id: string;
+  name: string;
+  phone: string;
+  lastVisitAt: Date | null;
+  clientStatus: string | null;
+  totalSpent: string | null;
+  daysSinceLastVisit: number | null;
+}
+
+export interface FunnelGroup {
+  count: number;
+  clients: FunnelClient[];
+}
+
+export interface ClientsFunnelDashboard {
+  ativos: FunnelGroup;
+  recorrentes: FunnelGroup;
+  comPlano: FunnelGroup;
+  devemVoltar: FunnelGroup;
+  emRisco: FunnelGroup;
+  elegiveisPlano: FunnelGroup;
+  inativos30d: FunnelGroup;
+  inativos45d: FunnelGroup;
+  pacotesExpirados: FunnelGroup;
+}
+
 export interface IStorage {
   // Users & Auth
   getUserById(id: string): Promise<User | undefined>;
@@ -97,9 +134,15 @@ export interface IStorage {
   updateClientFunnelData(clientId: string, barbershopId: string): Promise<void>;
   recalculateAllClientsStats(barbershopId: string): Promise<{ updated: number; errors: number }>;
   getClientsFunnelStats(barbershopId: string): Promise<ClientsFunnelStats>;
+  getClientsFunnelDashboard(barbershopId: string): Promise<ClientsFunnelDashboard>;
   getClientsForFunnelJob(barbershopId: string): Promise<ClientForFunnelJob[]>;
   getAllClientsForFunnelJob(): Promise<ClientForFunnelJob[]>;
+  backfillClientsWithoutFunnelData(): Promise<void>;
   
+  // Barber Services
+  getBarberServices(barberId: string): Promise<BarberService[]>;
+  setBarberServices(barberId: string, services: { serviceId: string; customPrice?: string | null }[]): Promise<void>;
+
   // Services
   getServices(barbershopId: string): Promise<Service[]>;
   getService(id: string): Promise<Service | undefined>;
@@ -253,6 +296,25 @@ export interface IStorage {
   getRefundNotifications(barbershopId: string, barberId: string): Promise<RefundNotification[]>;
   createRefundNotification(notification: InsertRefundNotification): Promise<RefundNotification>;
   markRefundNotificationRead(id: string): Promise<void>;
+
+  // Campaigns
+  getCampaigns(barbershopId: string): Promise<Campaign[]>;
+  getCampaign(id: string): Promise<Campaign | undefined>;
+  getCampaignsSending(): Promise<Campaign[]>;
+  createCampaign(data: InsertCampaign): Promise<Campaign>;
+  updateCampaign(id: string, updates: Partial<InsertCampaign>): Promise<Campaign | undefined>;
+  incrementCampaignSentCount(id: string): Promise<void>;
+  incrementCampaignFailedCount(id: string): Promise<void>;
+
+  // Campaign Recipients
+  createCampaignRecipients(recipients: InsertCampaignRecipient[]): Promise<void>;
+  getCampaignRecipients(campaignId: string): Promise<CampaignRecipient[]>;
+  getPendingCampaignRecipient(campaignId: string): Promise<CampaignRecipient | undefined>;
+  updateCampaignRecipient(id: string, updates: Partial<InsertCampaignRecipient>): Promise<void>;
+  getCampaignSentTodayCount(barbershopId: string): Promise<number>;
+
+  // Client filtering for campaigns
+  getClientsFiltered(barbershopId: string, filter: ClientCampaignFilter): Promise<Client[]>;
 }
 
 export class DbStorage implements IStorage {
@@ -358,9 +420,102 @@ export class DbStorage implements IStorage {
 
     const totalVisits = completedAppointments.length;
 
+    // Sem agendamentos completed: ainda assim refletir walk-in / só comanda (comandas fechadas).
+    // totalVisits no cliente continua sendo só a contagem de agendamentos completed (pode ser 0).
     if (totalVisits === 0) {
+      const clientComandasOnly = await db.select()
+        .from(schema.comandas)
+        .where(
+          and(
+            eq(schema.comandas.clientId, clientId),
+            eq(schema.comandas.barbershopId, barbershopId),
+            eq(schema.comandas.status, 'closed')
+          )
+        );
+
+      if (clientComandasOnly.length === 0) {
+        const activePackagesCheck = await this.getActiveClientPackages(clientId);
+        const hasActivePlanCheck = activePackagesCheck.length > 0;
+        await db.update(schema.clients)
+          .set({
+            clientStatus: hasActivePlanCheck ? 'cliente_plano' : 'novo_cliente',
+            totalVisits: 0,
+            planOfferEligible: false,
+          })
+          .where(eq(schema.clients.id, clientId));
+        return;
+      }
+
+      const sortedComandas = [...clientComandasOnly].sort((a, b) => {
+        const ta = new Date(a.paidAt ?? a.createdAt).getTime();
+        const tb = new Date(b.paidAt ?? b.createdAt).getTime();
+        return ta - tb;
+      });
+
+      const firstAt = sortedComandas[0].paidAt ?? sortedComandas[0].createdAt;
+      const lastAt = sortedComandas[sortedComandas.length - 1].paidAt ?? sortedComandas[sortedComandas.length - 1].createdAt;
+      const comandaCount = sortedComandas.length;
+
+      const totalSpentOnly = sortedComandas.reduce((sum, c) => sum + parseFloat(c.total || '0'), 0);
+      const averageTicketOnly = comandaCount > 0 ? totalSpentOnly / comandaCount : 0;
+
+      let averageVisitIntervalDaysOnly: number | null = null;
+      if (comandaCount >= 2) {
+        let totalIntervalDays = 0;
+        for (let i = 1; i < sortedComandas.length; i++) {
+          const prev = new Date(sortedComandas[i - 1].paidAt ?? sortedComandas[i - 1].createdAt).getTime();
+          const curr = new Date(sortedComandas[i].paidAt ?? sortedComandas[i].createdAt).getTime();
+          totalIntervalDays += (curr - prev) / (1000 * 60 * 60 * 24);
+        }
+        averageVisitIntervalDaysOnly = totalIntervalDays / (comandaCount - 1);
+      }
+
+      const activePackagesOnly = await this.getActiveClientPackages(clientId);
+      const hasActivePlanOnly = activePackagesOnly.length > 0;
+
+      const nowOnly = getNowAsUtcLocal();
+      const lastVisitDateOnly = new Date(lastAt);
+      const daysSinceVisitOnly = (nowOnly.getTime() - lastVisitDateOnly.getTime()) / (1000 * 60 * 60 * 24);
+
+      let clientStatusOnly: string;
+      if (hasActivePlanOnly) {
+        clientStatusOnly = 'cliente_plano';
+      } else if (daysSinceVisitOnly > 30) {
+        clientStatusOnly = 'cliente_inativo';
+      } else if (comandaCount >= 3) {
+        clientStatusOnly = 'cliente_recorrente';
+      } else if (comandaCount === 2) {
+        clientStatusOnly = 'cliente_ativo';
+      } else {
+        clientStatusOnly = 'novo_cliente';
+      }
+
+      const planOfferEligibleOnly = (
+        !hasActivePlanOnly &&
+        comandaCount >= 3 &&
+        averageVisitIntervalDaysOnly !== null &&
+        averageVisitIntervalDaysOnly < 30
+      );
+
+      let predictedNextVisitOnly: Date | null = null;
+      if (averageVisitIntervalDaysOnly !== null && lastAt) {
+        predictedNextVisitOnly = new Date(
+          lastVisitDateOnly.getTime() + averageVisitIntervalDaysOnly * 24 * 60 * 60 * 1000
+        );
+      }
+
       await db.update(schema.clients)
-        .set({ clientStatus: 'novo_cliente', totalVisits: 0, planOfferEligible: false })
+        .set({
+          firstVisitAt: new Date(firstAt),
+          lastVisitAt: lastVisitDateOnly,
+          totalVisits: 0,
+          totalSpent: totalSpentOnly.toFixed(2),
+          averageTicket: averageTicketOnly.toFixed(2),
+          averageVisitIntervalDays: averageVisitIntervalDaysOnly,
+          clientStatus: clientStatusOnly,
+          planOfferEligible: planOfferEligibleOnly,
+          predictedNextVisit: predictedNextVisitOnly,
+        })
         .where(eq(schema.clients.id, clientId));
       return;
     }
@@ -461,6 +616,26 @@ export class DbStorage implements IStorage {
     return { updated, errors };
   }
 
+  async backfillClientsWithoutFunnelData(): Promise<void> {
+    const unprocessed = await db.select()
+      .from(schema.clients)
+      .where(isNull(schema.clients.lastVisitAt));
+
+    if (unprocessed.length === 0) return;
+
+    console.log(`[Funil] Backfill: ${unprocessed.length} clientes sem dados do funil, processando...`);
+    let ok = 0;
+    for (const client of unprocessed) {
+      try {
+        await this.updateClientFunnelData(client.id, client.barbershopId);
+        ok++;
+      } catch (err) {
+        console.error(`[Funil] Backfill erro cliente ${client.id}:`, err);
+      }
+    }
+    console.log(`[Funil] Backfill concluído: ${ok}/${unprocessed.length} clientes atualizados`);
+  }
+
   async getClientsFunnelStats(barbershopId: string): Promise<ClientsFunnelStats> {
     const clients = await this.getClients(barbershopId);
     const now = getNowAsUtcLocal();
@@ -523,6 +698,186 @@ export class DbStorage implements IStorage {
     return { counts, planEligible, returningSoon, toReactivate, returnRate };
   }
 
+  async getClientsFunnelDashboard(barbershopId: string): Promise<ClientsFunnelDashboard> {
+    const clients = await this.getClients(barbershopId);
+    const allPackages = await this.getAllClientPackages(barbershopId);
+    const now = getNowAsUtcLocal();
+
+    // --- Dados ao vivo de visitas ---
+
+    // Comandas fechadas com clientId vinculado
+    const closedComandas = await db.select({
+      clientId: schema.comandas.clientId,
+      visitDate: schema.comandas.paidAt,
+      createdAt: schema.comandas.createdAt,
+    })
+      .from(schema.comandas)
+      .where(
+        and(
+          eq(schema.comandas.barbershopId, barbershopId),
+          eq(schema.comandas.status, 'closed'),
+          isNotNull(schema.comandas.clientId)
+        )
+      );
+
+    // Agendamentos concluídos com clientId vinculado
+    const completedAppts = await db.select({
+      clientId: schema.appointments.clientId,
+      visitDate: schema.appointments.startTime,
+    })
+      .from(schema.appointments)
+      .where(
+        and(
+          eq(schema.appointments.barbershopId, barbershopId),
+          eq(schema.appointments.status, 'completed'),
+          isNotNull(schema.appointments.clientId)
+        )
+      );
+
+    // Mapa: clientId → datas de visita (ordenadas ascendente)
+    const visitMap = new Map<string, Date[]>();
+    for (const c of closedComandas) {
+      if (!c.clientId) continue;
+      const date = new Date(c.visitDate ?? c.createdAt);
+      if (!visitMap.has(c.clientId)) visitMap.set(c.clientId, []);
+      visitMap.get(c.clientId)!.push(date);
+    }
+    for (const a of completedAppts) {
+      if (!a.clientId) continue;
+      const date = new Date(a.visitDate);
+      if (!visitMap.has(a.clientId)) visitMap.set(a.clientId, []);
+      visitMap.get(a.clientId)!.push(date);
+    }
+    for (const dates of visitMap.values()) {
+      dates.sort((a, b) => a.getTime() - b.getTime());
+    }
+
+    // Helpers ao vivo
+    const getLiveLastVisit = (clientId: string, storedLastVisit: Date | string | null): Date | null => {
+      const dates = visitMap.get(clientId);
+      if (dates && dates.length > 0) return dates[dates.length - 1];
+      return storedLastVisit ? new Date(storedLastVisit) : null;
+    };
+
+    const getLiveVisitCount = (clientId: string): number =>
+      visitMap.get(clientId)?.length ?? 0;
+
+    const daysSince = (date: Date | null): number => {
+      if (!date) return 9999;
+      return (now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24);
+    };
+
+    // IDs de clientes com pacotes ativos
+    const activeClientIds = new Set(
+      allPackages
+        .filter(p => (p.quantityRemaining ?? 0) >= 1 && p.expiresAt && new Date(p.expiresAt) > now)
+        .map(p => p.clientId)
+        .filter((id): id is string => id !== null)
+    );
+
+    const toFunnelClient = (c: Client): FunnelClient => {
+      const lastVisit = getLiveLastVisit(c.id, c.lastVisitAt);
+      return {
+        id: c.id,
+        name: c.name,
+        phone: c.phone,
+        lastVisitAt: lastVisit,
+        clientStatus: c.clientStatus,
+        totalSpent: c.totalSpent,
+        daysSinceLastVisit: lastVisit ? Math.floor(daysSince(lastVisit)) : null,
+      };
+    };
+
+    const makeGroup = (filtered: Client[]): FunnelGroup => ({
+      count: filtered.length,
+      clients: filtered.map(toFunnelClient),
+    });
+
+    // Blue zone — base saudável (ao vivo)
+    const ativos = clients.filter(c => {
+      const lv = getLiveLastVisit(c.id, c.lastVisitAt);
+      return lv !== null && daysSince(lv) <= 30;
+    });
+
+    const recorrentes = clients.filter(c =>
+      getLiveVisitCount(c.id) >= 3 || c.clientStatus === 'cliente_recorrente'
+    );
+
+    const comPlano = clients.filter(c =>
+      activeClientIds.has(c.id) || c.clientStatus === 'cliente_plano'
+    );
+
+    // Yellow zone — oportunidade (ordenar por mais urgente)
+    const devemVoltar = clients
+      .filter(c => {
+        const lv = getLiveLastVisit(c.id, c.lastVisitAt);
+        const d = daysSince(lv);
+        return lv !== null && d >= 15 && d < 25;
+      })
+      .sort((a, b) =>
+        daysSince(getLiveLastVisit(b.id, b.lastVisitAt)) -
+        daysSince(getLiveLastVisit(a.id, a.lastVisitAt))
+      );
+
+    const emRisco = clients
+      .filter(c => {
+        const lv = getLiveLastVisit(c.id, c.lastVisitAt);
+        const d = daysSince(lv);
+        return lv !== null && d >= 25 && d < 35;
+      })
+      .sort((a, b) =>
+        daysSince(getLiveLastVisit(b.id, b.lastVisitAt)) -
+        daysSince(getLiveLastVisit(a.id, a.lastVisitAt))
+      );
+
+    const elegiveisPlano = clients.filter(c =>
+      c.planOfferEligible ||
+      (!activeClientIds.has(c.id) && getLiveVisitCount(c.id) >= 3)
+    );
+
+    // Red zone — problema (ordenar por mais ausente)
+    const inativos30d = clients
+      .filter(c => {
+        const lv = getLiveLastVisit(c.id, c.lastVisitAt);
+        return lv !== null && daysSince(lv) > 30;
+      })
+      .sort((a, b) =>
+        daysSince(getLiveLastVisit(b.id, b.lastVisitAt)) -
+        daysSince(getLiveLastVisit(a.id, a.lastVisitAt))
+      );
+
+    const inativos45d = clients
+      .filter(c => {
+        const lv = getLiveLastVisit(c.id, c.lastVisitAt);
+        return lv !== null && daysSince(lv) > 45;
+      })
+      .sort((a, b) =>
+        daysSince(getLiveLastVisit(b.id, b.lastVisitAt)) -
+        daysSince(getLiveLastVisit(a.id, a.lastVisitAt))
+      );
+
+    // Pacotes expirados (sem mudança — já funcionava)
+    const expiredClientIds = new Set(
+      allPackages
+        .filter(p => p.expiresAt && new Date(p.expiresAt) < now)
+        .map(p => p.clientId)
+        .filter((id): id is string => id !== null)
+    );
+    const pacotesExpirados = clients.filter(c => expiredClientIds.has(c.id));
+
+    return {
+      ativos: makeGroup(ativos),
+      recorrentes: makeGroup(recorrentes),
+      comPlano: makeGroup(comPlano),
+      devemVoltar: makeGroup(devemVoltar),
+      emRisco: makeGroup(emRisco),
+      elegiveisPlano: makeGroup(elegiveisPlano),
+      inativos30d: makeGroup(inativos30d),
+      inativos45d: makeGroup(inativos45d),
+      pacotesExpirados: makeGroup(pacotesExpirados),
+    };
+  }
+
   async getClientsForFunnelJob(barbershopId: string): Promise<ClientForFunnelJob[]> {
     const clients = await this.getClients(barbershopId);
     const now = getNowAsUtcLocal();
@@ -583,6 +938,20 @@ export class DbStorage implements IStorage {
           daysUntilPredictedVisit,
         };
       });
+  }
+
+  // Barber Services
+  async getBarberServices(barberId: string): Promise<BarberService[]> {
+    return db.select().from(schema.barberServices).where(eq(schema.barberServices.barberId, barberId));
+  }
+
+  async setBarberServices(barberId: string, services: { serviceId: string; customPrice?: string | null }[]): Promise<void> {
+    await db.delete(schema.barberServices).where(eq(schema.barberServices.barberId, barberId));
+    if (services.length > 0) {
+      await db.insert(schema.barberServices).values(
+        services.map(s => ({ barberId, serviceId: s.serviceId, customPrice: s.customPrice || null }))
+      );
+    }
   }
 
   // Services
@@ -1644,6 +2013,131 @@ export class DbStorage implements IStorage {
       await tx.delete(schema.comandaItems).where(eq(schema.comandaItems.comandaId, comandaId));
       await tx.delete(schema.comandas).where(eq(schema.comandas.id, comandaId));
     });
+  }
+
+  // ============ CAMPAIGNS ============
+
+  async getCampaigns(barbershopId: string): Promise<Campaign[]> {
+    return db.select().from(schema.campaigns)
+      .where(eq(schema.campaigns.barbershopId, barbershopId))
+      .orderBy(desc(schema.campaigns.createdAt));
+  }
+
+  async getCampaign(id: string): Promise<Campaign | undefined> {
+    const result = await db.select().from(schema.campaigns)
+      .where(eq(schema.campaigns.id, id));
+    return result[0];
+  }
+
+  async getCampaignsSending(): Promise<Campaign[]> {
+    return db.select().from(schema.campaigns)
+      .where(eq(schema.campaigns.status, 'sending'))
+      .orderBy(schema.campaigns.createdAt);
+  }
+
+  async createCampaign(data: InsertCampaign): Promise<Campaign> {
+    const result = await db.insert(schema.campaigns).values(data).returning();
+    return result[0];
+  }
+
+  async updateCampaign(id: string, updates: Partial<InsertCampaign>): Promise<Campaign | undefined> {
+    const result = await db.update(schema.campaigns)
+      .set(updates)
+      .where(eq(schema.campaigns.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async incrementCampaignSentCount(id: string): Promise<void> {
+    await db.update(schema.campaigns)
+      .set({ sentCount: sql`${schema.campaigns.sentCount} + 1` })
+      .where(eq(schema.campaigns.id, id));
+  }
+
+  async incrementCampaignFailedCount(id: string): Promise<void> {
+    await db.update(schema.campaigns)
+      .set({ failedCount: sql`${schema.campaigns.failedCount} + 1` })
+      .where(eq(schema.campaigns.id, id));
+  }
+
+  // ============ CAMPAIGN RECIPIENTS ============
+
+  async createCampaignRecipients(recipients: InsertCampaignRecipient[]): Promise<void> {
+    if (recipients.length === 0) return;
+    for (let i = 0; i < recipients.length; i += 500) {
+      await db.insert(schema.campaignRecipients).values(recipients.slice(i, i + 500));
+    }
+  }
+
+  async getCampaignRecipients(campaignId: string): Promise<CampaignRecipient[]> {
+    return db.select().from(schema.campaignRecipients)
+      .where(eq(schema.campaignRecipients.campaignId, campaignId))
+      .orderBy(schema.campaignRecipients.createdAt);
+  }
+
+  async getPendingCampaignRecipient(campaignId: string): Promise<CampaignRecipient | undefined> {
+    const result = await db.select().from(schema.campaignRecipients)
+      .where(and(
+        eq(schema.campaignRecipients.campaignId, campaignId),
+        eq(schema.campaignRecipients.status, 'pending')
+      ))
+      .limit(1);
+    return result[0];
+  }
+
+  async updateCampaignRecipient(id: string, updates: Partial<InsertCampaignRecipient>): Promise<void> {
+    await db.update(schema.campaignRecipients)
+      .set(updates)
+      .where(eq(schema.campaignRecipients.id, id));
+  }
+
+  async getCampaignSentTodayCount(barbershopId: string): Promise<number> {
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const result = await db.select({ count: sql<number>`count(*)` })
+      .from(schema.campaignRecipients)
+      .where(and(
+        eq(schema.campaignRecipients.barbershopId, barbershopId),
+        eq(schema.campaignRecipients.status, 'sent'),
+        gte(schema.campaignRecipients.sentAt, startOfDay)
+      ));
+    return Number(result[0]?.count ?? 0);
+  }
+
+  // ============ CLIENT FILTER ============
+
+  async getClientsFiltered(barbershopId: string, filter: ClientCampaignFilter): Promise<Client[]> {
+    if (filter.mode === 'all') {
+      return db.select().from(schema.clients)
+        .where(eq(schema.clients.barbershopId, barbershopId));
+    }
+
+    if (filter.mode === 'manual' && filter.clientIds?.length) {
+      return db.select().from(schema.clients)
+        .where(and(
+          eq(schema.clients.barbershopId, barbershopId),
+          inArray(schema.clients.id, filter.clientIds)
+        ));
+    }
+
+    if (filter.mode === 'funnel' && filter.funnelStatuses?.length) {
+      return db.select().from(schema.clients)
+        .where(and(
+          eq(schema.clients.barbershopId, barbershopId),
+          inArray(schema.clients.clientStatus, filter.funnelStatuses)
+        ));
+    }
+
+    if (filter.mode === 'inactive' && filter.inactiveDays) {
+      const cutoff = new Date(Date.now() - filter.inactiveDays * 24 * 60 * 60 * 1000);
+      return db.select().from(schema.clients)
+        .where(and(
+          eq(schema.clients.barbershopId, barbershopId),
+          lte(schema.clients.lastVisitAt, cutoff)
+        ));
+    }
+
+    return [];
   }
 }
 

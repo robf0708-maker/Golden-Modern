@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { DreReportPayload } from "@/types/dre";
 
 // API helper
 async function fetchAPI(endpoint: string, options?: RequestInit) {
@@ -116,6 +117,30 @@ export function useDeleteBarber() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/barbers"] });
+    },
+  });
+}
+
+// ============ BARBER SERVICES ============
+
+export function useBarberServices(barberId: string | null) {
+  return useQuery({
+    queryKey: ["/barbers", barberId, "services"],
+    queryFn: () => fetchAPI(`/barbers/${barberId}/services`),
+    enabled: !!barberId,
+  });
+}
+
+export function useSetBarberServices() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ barberId, services }: { barberId: string; services: { serviceId: string; customPrice?: string | null }[] }) =>
+      fetchAPI(`/barbers/${barberId}/services`, {
+        method: "PUT",
+        body: JSON.stringify({ services }),
+      }),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/barbers", vars.barberId, "services"] });
     },
   });
 }
@@ -781,7 +806,7 @@ export function useDREReport(startDate?: string, endDate?: string) {
   if (startDate) params.append("startDate", startDate);
   if (endDate) params.append("endDate", endDate);
   
-  return useQuery({
+  return useQuery<DreReportPayload>({
     queryKey: ["/reports/dre", startDate, endDate],
     queryFn: () => fetchAPI(`/reports/dre?${params.toString()}`),
   });
@@ -797,6 +822,14 @@ export function useFunnelStats() {
   });
 }
 
+export function useClientsFunnelDashboard() {
+  return useQuery({
+    queryKey: ["/clients/funnel-dashboard"],
+    queryFn: () => fetchAPI("/clients/funnel-dashboard"),
+    staleTime: 2 * 60 * 1000,
+  });
+}
+
 export function useRecalculateStats() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -806,5 +839,54 @@ export function useRecalculateStats() {
       queryClient.invalidateQueries({ queryKey: ["/clients/funnel"] });
       queryClient.invalidateQueries({ queryKey: ["/clients"] });
     },
+  });
+}
+
+// ============ CAMPANHAS ============
+
+export function useCampaigns() {
+  return useQuery({
+    queryKey: ["/campaigns"],
+    queryFn: () => fetchAPI("/campaigns"),
+  });
+}
+
+export function useCampaign(id: string | null) {
+  return useQuery({
+    queryKey: ["/campaigns", id],
+    queryFn: () => fetchAPI(`/campaigns/${id}`),
+    enabled: !!id,
+    refetchInterval: (query: any) => {
+      return query.state.data?.status === 'sending' ? 3000 : false;
+    },
+  });
+}
+
+export function useCreateCampaign() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: any) =>
+      fetchAPI("/campaigns", { method: "POST", body: JSON.stringify(data) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/campaigns"] });
+    },
+  });
+}
+
+export function useStopCampaign() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI(`/campaigns/${id}/stop`, { method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/campaigns"] });
+    },
+  });
+}
+
+export function useFilterClients() {
+  return useMutation({
+    mutationFn: (filter: any) =>
+      fetchAPI("/clients/filter", { method: "POST", body: JSON.stringify(filter) }),
   });
 }

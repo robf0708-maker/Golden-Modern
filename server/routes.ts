@@ -22,12 +22,15 @@ import {
   insertFixedExpenseSchema
 } from "@shared/schema";
 import { scheduleAppointmentNotifications, scheduleCancellationMessage, scheduleWelcomeMessage } from "./messaging";
+import { renderCampaignMessage } from './messaging/campaign-renderer';
 import { handleIncomingMessage } from "./chatbot";
 import { getAvailabilitySummaryForBarbers } from "./chatbot/availability-service";
 import { getProvider } from "./messaging/provider-interface";
 import { sendPasswordResetEmail } from "./email";
 import { normalizePhone, isValidBrazilianPhone } from "./utils/phone";
 import { brazilDateToUTCStart, brazilDateToUTCEnd, getBrazilDateString } from "./utils/timezone";
+import { getComandaGrossBreakdown, sumGrossFromBreakdown } from "./reports/dre-payment-gross";
+import { utcInstantToBrazilDateKey, buildChartPoints } from "./reports/dre-chart-utils";
 
 // Helper function to calculate net amount after Stripe fees
 function calculateNetAmount(grossAmount: number, feeStripePercent: number, feeStripeFixed: number): number {
@@ -485,6 +488,30 @@ export async function registerRoutes(
     res.json({ success: true });
   });
 
+  // Get services configured for a barber (admin)
+  app.get("/api/barbers/:id/services", requireAuth, async (req, res) => {
+    try {
+      const barberServices = await storage.getBarberServices(req.params.id);
+      res.json(barberServices);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Set services for a barber (admin) — replaces existing list
+  app.put("/api/barbers/:id/services", requireAuth, async (req, res) => {
+    try {
+      const { services } = req.body as { services: { serviceId: string; customPrice?: string | null }[] };
+      if (!Array.isArray(services)) {
+        return res.status(400).json({ error: "services deve ser um array" });
+      }
+      await storage.setBarberServices(req.params.id, services);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
   // ============ CLIENTS ============
   
   app.get("/api/clients", requireAuth, async (req, res) => {
@@ -530,6 +557,17 @@ export async function registerRoutes(
   });
 
   // Funil de Clientes (rotas específicas devem vir antes de /:id)
+  app.get("/api/clients/funnel-dashboard", requireAuth, async (req, res) => {
+    try {
+      const barbershopId = req.session.barbershopId!;
+      const dashboard = await storage.getClientsFunnelDashboard(barbershopId);
+      res.json(dashboard);
+    } catch (error: any) {
+      console.error('[Funil] Erro ao buscar dashboard do funil:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.get("/api/clients/funnel", requireAuth, async (req, res) => {
     try {
       const barbershopId = req.session.barbershopId!;
@@ -1728,7 +1766,8 @@ export async function registerRoutes(
             client.name,
             barber.name,
             serviceName,
-            new Date(appointment.startTime)
+            new Date(appointment.startTime),
+            barber.phone || undefined
           );
           console.log(`[API-Appointments] Notificações agendadas com sucesso!`);
         } else {
@@ -3206,7 +3245,8 @@ export async function registerRoutes(
         avatar: b.avatar,
         role: b.role,
         lunchStart: b.lunchStart,
-        lunchEnd: b.lunchEnd
+        lunchEnd: b.lunchEnd,
+        breakSchedule: b.breakSchedule
       })));
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -3234,7 +3274,16 @@ export async function registerRoutes(
       }
 
       const allBarbers = await storage.getBarbers(barbershopId);
-      const eligibleBarbers = allBarbers.filter(b => b.active && (b as any).allowAutoAssign !== false);
+      // Filter: active + allowAutoAssign + offers this service (if barber has services configured)
+      const eligibleBarbersRaw = allBarbers.filter(b => b.active && (b as any).allowAutoAssign !== false);
+      const eligibleBarbers: typeof eligibleBarbersRaw = [];
+      for (const b of eligibleBarbersRaw) {
+        const bs = await storage.getBarberServices(b.id);
+        // If no services configured, barber is eligible for all services (backwards compat)
+        if (bs.length === 0 || bs.some(x => x.serviceId === serviceId)) {
+          eligibleBarbers.push(b);
+        }
+      }
 
       if (eligibleBarbers.length === 0) {
         return res.status(200).json({ error: "Nenhum profissional disponível para agendamento automático" });
@@ -3294,11 +3343,35 @@ export async function registerRoutes(
     }
   });
 
-  // Get services for public booking
+  // Get services for public booking (optionally filtered by barber)
   app.get("/api/public/:barbershopId/services", async (req, res) => {
     try {
-      const services = await storage.getServices(req.params.barbershopId);
-      const activeServices = services.filter(s => s.active);
+      const { barberId } = req.query as { barberId?: string };
+      const allServices = await storage.getServices(req.params.barbershopId);
+      const activeServices = allServices.filter(s => s.active);
+
+      // If barberId provided, check if this barber has any services configured
+      if (barberId) {
+        const barberServices = await storage.getBarberServices(barberId);
+        // Only filter if barber has services configured (backwards compat: no config = show all)
+        if (barberServices.length > 0) {
+          const result = barberServices
+            .map(bs => {
+              const svc = activeServices.find(s => s.id === bs.serviceId);
+              if (!svc) return null;
+              return {
+                id: svc.id,
+                name: svc.name,
+                price: bs.customPrice ?? svc.price, // custom price takes precedence
+                duration: svc.duration,
+                category: svc.category,
+              };
+            })
+            .filter(Boolean);
+          return res.json(result);
+        }
+      }
+
       res.json(activeServices.map(s => ({
         id: s.id,
         name: s.name,
@@ -3564,19 +3637,33 @@ export async function registerRoutes(
 
       // Server-side validation: barber lunch break
       // Use time string directly since it represents local time
-      if (barber.lunchStart && barber.lunchEnd) {
-        const [lunchStartH, lunchStartM] = barber.lunchStart.split(':').map(Number);
-        const [lunchEndH, lunchEndM] = barber.lunchEnd.split(':').map(Number);
-        const lunchStartMinutes = lunchStartH * 60 + lunchStartM;
-        const lunchEndMinutes = lunchEndH * 60 + lunchEndM;
-        
-        // Use time string directly (e.g., "08:00")
-        const [slotHour, slotMin] = time.split(':').map(Number);
-        const slotStartMinutes = slotHour * 60 + slotMin;
-        const slotEndMinutes = slotStartMinutes + totalDuration;
-        
-        // Check if there is overlap with lunch break
-        if (!(slotEndMinutes <= lunchStartMinutes || slotStartMinutes >= lunchEndMinutes)) {
+      const [slotHour, slotMin] = (time as string).split(':').map(Number);
+      const slotStartMinutes = slotHour * 60 + slotMin;
+      const slotEndMinutes = slotStartMinutes + totalDuration;
+
+      let breakStart: string | null = null;
+      let breakEnd: string | null = null;
+
+      const dayMap2 = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      const localDate2 = new Date(`${date}T12:00:00`);
+      const dayKey2 = dayMap2[localDate2.getDay()];
+      const breakSchedule = barber.breakSchedule as Record<string, { start: string | null; end: string | null; enabled: boolean }> | null;
+
+      if (breakSchedule && breakSchedule[dayKey2]?.enabled) {
+        breakStart = breakSchedule[dayKey2].start;
+        breakEnd = breakSchedule[dayKey2].end;
+      } else if (barber.lunchStart && barber.lunchEnd) {
+        breakStart = barber.lunchStart;
+        breakEnd = barber.lunchEnd;
+      }
+
+      if (breakStart && breakEnd) {
+        const [bStartH, bStartM] = breakStart.split(':').map(Number);
+        const [bEndH, bEndM] = breakEnd.split(':').map(Number);
+        const breakStartMinutes = bStartH * 60 + bStartM;
+        const breakEndMinutes = bEndH * 60 + bEndM;
+
+        if (!(slotEndMinutes <= breakStartMinutes || slotStartMinutes >= breakEndMinutes)) {
           return res.status(400).json({ error: "Horário conflita com intervalo do barbeiro" });
         }
       }
@@ -3675,7 +3762,8 @@ export async function registerRoutes(
             client.name,
             barber.name,
             serviceName,
-            startTime
+            startTime,
+            barber.phone || undefined
           );
           console.log(`[API-PublicBooking] Notificações agendadas com sucesso!`);
         } else {
@@ -3730,13 +3818,16 @@ export async function registerRoutes(
           const cancelYear = startDate.getUTCFullYear();
           const cancelH = startDate.getUTCHours().toString().padStart(2, '0');
           const cancelM = startDate.getUTCMinutes().toString().padStart(2, '0');
+          const cancelBarber = appointment.barberId ? await storage.getBarber(appointment.barberId) : null;
           await scheduleCancellationMessage(
             appointment.id,
             req.params.barbershopId,
             client.phone,
             client.name,
             `${cancelDay}/${cancelMonth}/${cancelYear}`,
-            `${cancelH}:${cancelM}`
+            `${cancelH}:${cancelM}`,
+            cancelBarber?.phone || undefined,
+            cancelBarber?.name || undefined
           );
         }
       } catch (notifyError) {
@@ -3851,10 +3942,13 @@ export async function registerRoutes(
         reminder1HourEnabled: z.boolean().default(true),
         confirmationEnabled: z.boolean().default(true),
         cancellationEnabled: z.boolean().default(true),
+        funnelAutomationEnabled: z.boolean().optional(),
         reactivation20daysEnabled: z.boolean().optional(),
         reactivation30daysEnabled: z.boolean().optional(),
         reactivation45daysEnabled: z.boolean().optional(),
         predictedReturnEnabled: z.boolean().optional(),
+        professionalBookingEnabled: z.boolean().optional(),
+        professionalCancellationEnabled: z.boolean().optional(),
         welcomeTemplate: z.string().optional().nullable(),
         reminder1DayTemplate: z.string().optional().nullable(),
         reminder1HourTemplate: z.string().optional().nullable(),
@@ -4815,6 +4909,9 @@ export async function registerRoutes(
       const end = endDate
         ? brazilDateToUTCEnd(endDate as string)
         : brazilDateToUTCEnd(todayBrazil);
+
+      const chartStartStr = (startDate as string) || utcInstantToBrazilDateKey(start);
+      const chartEndStr = (endDate as string) || utcInstantToBrazilDateKey(end);
       
       // Get barbershop for fee rates
       const barbershop = await storage.getBarbershop(barbershopId);
@@ -4869,6 +4966,9 @@ export async function registerRoutes(
         totalSold: number;
         commission: number;
       }> = new Map();
+
+      const dailyGross = new Map<string, number>();
+      const serviceRevenue = new Map<string, { serviceId: string; name: string; total: number }>();
       
       // Initialize barber stats
       barbers.forEach(b => {
@@ -4988,6 +5088,35 @@ export async function registerRoutes(
               });
             }
           }
+
+          // Receita por serviço (extensão DRE)
+          if (item.type === 'service' && item.serviceId) {
+            const itemTotal = parseFloat(item.total || '0');
+            const sid = item.serviceId;
+            const name = serviceMap.get(sid) || 'Serviço';
+            const cur = serviceRevenue.get(sid);
+            if (cur) cur.total += itemTotal;
+            else serviceRevenue.set(sid, { serviceId: sid, name, total: itemTotal });
+          }
+          if (item.type === 'package_use' && item.clientPackageId) {
+            const clientPkg = allClientPackages.find(cp => cp.id === item.clientPackageId);
+            if (clientPkg) {
+              const pkg = packages.find(p => p.id === clientPkg.packageId);
+              if (pkg) {
+                const baseAmount = clientPkg.netAmount ? parseFloat(clientPkg.netAmount) : parseFloat(pkg.price);
+                const totalUses = clientPkg.quantityOriginal || pkg.quantity || 1;
+                const packageValue = baseAmount / totalUses;
+                if (isFinite(packageValue) && packageValue > 0) {
+                  const add = packageValue * item.quantity;
+                  const sid = pkg.serviceId;
+                  const name = serviceMap.get(sid) || 'Serviço';
+                  const cur = serviceRevenue.get(sid);
+                  if (cur) cur.total += add;
+                  else serviceRevenue.set(sid, { serviceId: sid, name, total: add });
+                }
+              }
+            }
+          }
           
           // Build item description
           if (item.serviceId && serviceMap.has(item.serviceId)) {
@@ -5020,6 +5149,11 @@ export async function registerRoutes(
           total: total,
           commission: comandaCommissionTotal
         };
+
+        const snapCash = cashTotal;
+        const snapPix = pixTotal;
+        const snapCredit = creditTotal;
+        const snapDebit = debitTotal;
         
         if (comanda.paymentMethod === 'split' && comanda.paymentDetails) {
           const details = comanda.paymentDetails as any;
@@ -5129,6 +5263,14 @@ export async function registerRoutes(
             });
           }
         }
+
+        const dateKey = utcInstantToBrazilDateKey(date);
+        const grossDelta =
+          (cashTotal - snapCash) +
+          (pixTotal - snapPix) +
+          (creditTotal - snapCredit) +
+          (debitTotal - snapDebit);
+        dailyGross.set(dateKey, (dailyGross.get(dateKey) || 0) + grossDelta);
       }
       
       // Get fixed expenses for the period
@@ -5184,6 +5326,47 @@ export async function registerRoutes(
           stockValue: p.stock * parseFloat(p.price)
         }))
         .sort((a, b) => b.stockValue - a.stockValue);
+
+      const chart = { points: buildChartPoints(dailyGross, chartStartStr, chartEndStr) };
+      const serviceRevenueSorted = Array.from(serviceRevenue.values()).sort((a, b) => b.total - a.total);
+
+      const periodMs = end.getTime() - start.getTime() + 1;
+      const prevEnd = new Date(start.getTime() - 1);
+      const prevStart = new Date(prevEnd.getTime() - periodMs + 1);
+      const prevComandas = allComandas.filter(c => {
+        const d = new Date(c.paidAt || c.createdAt);
+        return d >= prevStart && d <= prevEnd;
+      });
+      let previousGrossTotal = 0;
+      for (const comanda of prevComandas) {
+        const items = await storage.getComandaItems(comanda.id);
+        const allItemsAreBarberPurchase = items.length > 0 && items.every(i => i.isBarberPurchase);
+        const t = parseFloat(comanda.total || "0");
+        if (allItemsAreBarberPurchase && t === 0) continue;
+        const b = getComandaGrossBreakdown(comanda);
+        previousGrossTotal += sumGrossFromBreakdown(b);
+      }
+
+      const clientsFunnelStats = await storage.getClientsFunnelStats(barbershopId);
+      const inactiveCount = clientsFunnelStats.counts.cliente_inativo ?? 0;
+      const alerts: Array<{ type: string; severity: 'warning' | 'info'; message: string }> = [];
+      if (previousGrossTotal > 0) {
+        const pct = ((grossTotal - previousGrossTotal) / previousGrossTotal) * 100;
+        if (pct <= -15) {
+          alerts.push({
+            type: 'revenue_vs_previous',
+            severity: 'warning',
+            message: `Faturamento caiu ${Math.round(Math.abs(pct))}% em relação ao período anterior equivalente.`,
+          });
+        }
+      }
+      if (inactiveCount >= 3) {
+        alerts.push({
+          type: 'inactive_clients',
+          severity: 'info',
+          message: `${inactiveCount} clientes inativos no funil.`,
+        });
+      }
       
       res.json({
         period: { start: start.toISOString(), end: end.toISOString() },
@@ -5199,6 +5382,19 @@ export async function registerRoutes(
         barberPanel,
         productSalesPanel,
         stockPanel,
+        chart,
+        serviceRevenue: serviceRevenueSorted,
+        alerts,
+        previousPeriod: {
+          start: prevStart.toISOString(),
+          end: prevEnd.toISOString(),
+          grossTotal: previousGrossTotal
+        },
+        funnelSnapshot: {
+          inactiveClients: inactiveCount,
+          returnRate: clientsFunnelStats.returnRate,
+          counts: clientsFunnelStats.counts
+        },
         byPaymentMethod: {
           cash: { gross: cashTotal, fees: cashFees, net: cashTotal - cashFees },
           pix: { gross: pixTotal, fees: pixFees, net: pixTotal - pixFees },
@@ -5410,6 +5606,147 @@ export async function registerRoutes(
       });
     } catch (error: any) {
       console.error('[Migration] Erro:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ============ CAMPANHAS ============
+
+  // POST /api/clients/filter — preview ao vivo de destinatários
+  app.post("/api/clients/filter", requireAuth, async (req, res) => {
+    try {
+      const filterSchema = z.object({
+        mode: z.enum(['all', 'funnel', 'inactive', 'manual']),
+        funnelStatuses: z.array(z.string()).optional(),
+        inactiveDays: z.number().optional(),
+        clientIds: z.array(z.string()).optional(),
+      });
+      const filter = filterSchema.parse(req.body);
+      if (filter.mode === 'funnel' && (!filter.funnelStatuses || filter.funnelStatuses.length === 0)) {
+        return res.status(400).json({ error: "Selecione pelo menos um status do funil" });
+      }
+      if (filter.mode === 'manual' && (!filter.clientIds || filter.clientIds.length === 0)) {
+        return res.status(400).json({ error: "Selecione pelo menos um cliente" });
+      }
+      if (filter.mode === 'inactive' && (!filter.inactiveDays || filter.inactiveDays < 1)) {
+        return res.status(400).json({ error: "Informe um número de dias válido (mínimo 1)" });
+      }
+      const clients = await storage.getClientsFiltered(req.session.barbershopId!, filter);
+      res.json({ count: clients.length, clients });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // POST /api/campaigns — criar e iniciar campanha
+  app.post("/api/campaigns", requireAuth, async (req, res) => {
+    try {
+      const bodySchema = z.object({
+        name: z.string().optional(),
+        message: z.string().min(1, "Mensagem não pode estar vazia"),
+        filter: z.object({
+          mode: z.enum(['all', 'funnel', 'inactive', 'manual']),
+          funnelStatuses: z.array(z.string()).optional(),
+          inactiveDays: z.number().optional(),
+          clientIds: z.array(z.string()).optional(),
+        }),
+        delayMinSeconds: z.number().min(5).default(15),
+        delayMaxSeconds: z.number().min(10).default(45),
+        dailyLimit: z.number().min(1).max(500).default(100),
+      });
+
+      const body = bodySchema.parse(req.body);
+      const barbershopId = req.session.barbershopId!;
+
+      const f = body.filter;
+      if (f.mode === 'funnel' && (!f.funnelStatuses || f.funnelStatuses.length === 0)) {
+        return res.status(400).json({ error: "Selecione pelo menos um status do funil" });
+      }
+      if (f.mode === 'manual' && (!f.clientIds || f.clientIds.length === 0)) {
+        return res.status(400).json({ error: "Selecione pelo menos um cliente" });
+      }
+      if (f.mode === 'inactive' && (!f.inactiveDays || f.inactiveDays < 1)) {
+        return res.status(400).json({ error: "Informe um número de dias válido (mínimo 1)" });
+      }
+
+      const barbershop = await storage.getBarbershop(barbershopId);
+      const clients = await storage.getClientsFiltered(barbershopId, body.filter);
+
+      if (clients.length === 0) {
+        return res.status(400).json({ error: "Nenhum cliente encontrado com o filtro selecionado" });
+      }
+
+      const campaign = await storage.createCampaign({
+        barbershopId,
+        name: body.name,
+        message: body.message,
+        status: 'sending',
+        totalRecipients: clients.length,
+        sentCount: 0,
+        failedCount: 0,
+        delayMinSeconds: body.delayMinSeconds,
+        delayMaxSeconds: body.delayMaxSeconds,
+        dailyLimit: body.dailyLimit,
+      } as any);
+
+      const recipients = clients.map(client => ({
+        campaignId: campaign.id,
+        barbershopId,
+        clientId: client.id,
+        phone: client.phone,
+        clientName: client.name,
+        renderedMessage: renderCampaignMessage(body.message, {
+          nome: client.name,
+          barbearia: barbershop?.name ?? '',
+        }),
+        status: 'pending' as const,
+      }));
+
+      await storage.createCampaignRecipients(recipients);
+
+      res.json(campaign);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // GET /api/campaigns — listar campanhas da barbearia
+  app.get("/api/campaigns", requireAuth, async (req, res) => {
+    try {
+      const campaigns = await storage.getCampaigns(req.session.barbershopId!);
+      res.json(campaigns);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // GET /api/campaigns/:id — detalhe da campanha com destinatários
+  app.get("/api/campaigns/:id", requireAuth, async (req, res) => {
+    try {
+      const campaign = await storage.getCampaign(req.params.id);
+      if (!campaign || campaign.barbershopId !== req.session.barbershopId) {
+        return res.status(404).json({ error: "Campanha não encontrada" });
+      }
+      const recipients = await storage.getCampaignRecipients(req.params.id);
+      res.json({ ...campaign, recipients });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/campaigns/:id/stop — parar campanha em andamento
+  app.post("/api/campaigns/:id/stop", requireAuth, async (req, res) => {
+    try {
+      const campaign = await storage.getCampaign(req.params.id);
+      if (!campaign || campaign.barbershopId !== req.session.barbershopId) {
+        return res.status(404).json({ error: "Campanha não encontrada" });
+      }
+      if (campaign.status !== 'sending') {
+        return res.status(400).json({ error: "Campanha não está em andamento" });
+      }
+      await storage.updateCampaign(req.params.id, { status: 'stopped' } as any);
+      res.json({ success: true });
+    } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
   });

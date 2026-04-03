@@ -137,9 +137,12 @@ export default function PublicBooking() {
   });
 
   const { data: services = [] } = useQuery<Service[]>({
-    queryKey: [`/public/${barbershopId}/services`],
+    queryKey: [`/public/${barbershopId}/services`, selectedBarber?.id],
     queryFn: async () => {
-      const res = await fetch(`/api/public/${barbershopId}/services`);
+      const url = selectedBarber
+        ? `/api/public/${barbershopId}/services?barberId=${selectedBarber.id}`
+        : `/api/public/${barbershopId}/services`;
+      const res = await fetch(url);
       return res.json();
     },
     enabled: !!barbershopId && step === 'service'

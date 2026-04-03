@@ -87,6 +87,18 @@ Temos novidades esperando por você! Que tal voltar a fazer parte da nossa famí
 
 Responda essa mensagem para agendar ou use nosso link de agendamento online. ✂️`,
 
+  professional_booking: `Olá {barberName}! 📅
+
+Novo agendamento confirmado na *{barbershopName}*:
+
+👤 Cliente: {clientName}
+✂️ Serviço: {serviceName}
+📅 Data: {appointmentDate} às {appointmentTime}`,
+
+  professional_cancellation: `Olá {barberName},
+
+O cliente *{clientName}* cancelou o agendamento do dia *{appointmentDate}* às *{appointmentTime}* na *{barbershopName}*.`,
+
   predicted_return: `Olá {clientName}! 💈
 
 Parece que já está quase na hora de alinhar o visual!

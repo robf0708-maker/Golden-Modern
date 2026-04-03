@@ -16,7 +16,7 @@ export interface MessageProvider {
   isConfigured(): boolean;
 }
 
-export type NotificationType = 
+export type NotificationType =
   | 'welcome'
   | 'appointment_reminder_1day'
   | 'appointment_reminder_1hour'
@@ -26,7 +26,10 @@ export type NotificationType =
   | 'reactivation_20days'
   | 'reactivation_30days'
   | 'reactivation_45days'
-  | 'predicted_return';
+  | 'predicted_return'
+  // Avisos para o profissional
+  | 'professional_booking'
+  | 'professional_cancellation';
 
 export interface NotificationConfig {
   welcomeEnabled: boolean;

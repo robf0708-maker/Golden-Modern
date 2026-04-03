@@ -92,6 +92,7 @@ export default function Settings() {
     reminder1HourTemplate: '',
     confirmationTemplate: '',
     cancellationTemplate: '',
+    funnelAutomationEnabled: false,
     reactivation20daysEnabled: true,
     reactivation20daysTemplate: '',
     reactivation30daysEnabled: true,
@@ -100,6 +101,8 @@ export default function Settings() {
     reactivation45daysTemplate: '',
     predictedReturnEnabled: true,
     predictedReturnTemplate: '',
+    professionalBookingEnabled: false,
+    professionalCancellationEnabled: false,
   });
 
   const [chatbotSettings, setChatbotSettings] = useState({
@@ -181,6 +184,7 @@ export default function Settings() {
         reminder1HourTemplate: notifSettings.reminder1HourTemplate || '',
         confirmationTemplate: notifSettings.confirmationTemplate || '',
         cancellationTemplate: notifSettings.cancellationTemplate || '',
+        funnelAutomationEnabled: notifSettings.funnelAutomationEnabled ?? false,
         reactivation20daysEnabled: notifSettings.reactivation20daysEnabled ?? true,
         reactivation20daysTemplate: notifSettings.reactivation20daysTemplate || '',
         reactivation30daysEnabled: notifSettings.reactivation30daysEnabled ?? true,
@@ -189,6 +193,8 @@ export default function Settings() {
         reactivation45daysTemplate: notifSettings.reactivation45daysTemplate || '',
         predictedReturnEnabled: notifSettings.predictedReturnEnabled ?? true,
         predictedReturnTemplate: notifSettings.predictedReturnTemplate || '',
+        professionalBookingEnabled: notifSettings.professionalBookingEnabled ?? false,
+        professionalCancellationEnabled: notifSettings.professionalCancellationEnabled ?? false,
       });
     }
   }, [notifSettings]);
@@ -1152,17 +1158,68 @@ export default function Settings() {
 
                 <div className="space-y-4">
                   <div className="flex items-center gap-2">
+                    <Bell className="h-5 w-5 text-blue-500" />
+                    <div>
+                      <h4 className="font-medium text-foreground">Avisos para o Profissional</h4>
+                      <p className="text-sm text-muted-foreground">Notificar o profissional via WhatsApp quando houver agendamento ou cancelamento</p>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="p-4 rounded-lg bg-background/50 border border-border space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">Novo agendamento</p>
+                          <p className="text-sm text-muted-foreground">Avisar o profissional quando um cliente agendar com ele</p>
+                        </div>
+                        <Switch
+                          checked={notificationSettings.professionalBookingEnabled}
+                          onCheckedChange={(v) => setNotificationSettings(prev => ({ ...prev, professionalBookingEnabled: v }))}
+                          data-testid="switch-professional-booking"
+                        />
+                      </div>
+                    </div>
+                    <div className="p-4 rounded-lg bg-background/50 border border-border space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">Cancelamento</p>
+                          <p className="text-sm text-muted-foreground">Avisar o profissional quando um cliente cancelar o agendamento</p>
+                        </div>
+                        <Switch
+                          checked={notificationSettings.professionalCancellationEnabled}
+                          onCheckedChange={(v) => setNotificationSettings(prev => ({ ...prev, professionalCancellationEnabled: v }))}
+                          data-testid="switch-professional-cancellation"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
                     <RefreshCw className="h-5 w-5 text-orange-500" />
                     <div>
                       <h4 className="font-medium text-foreground">Funil de Reativação</h4>
                       <p className="text-sm text-muted-foreground">Mensagens automáticas para clientes inativos e previsão de retorno</p>
                     </div>
                   </div>
+                  <div className="flex items-center justify-between p-4 rounded-lg border border-orange-500/30 bg-orange-500/5">
+                    <div>
+                      <p className="font-medium text-foreground">Envio automático ativo</p>
+                      <p className="text-sm text-muted-foreground">Liga ou desliga todas as mensagens automáticas do funil</p>
+                    </div>
+                    <Switch
+                      checked={notificationSettings.funnelAutomationEnabled}
+                      onCheckedChange={(v) => setNotificationSettings(prev => ({ ...prev, funnelAutomationEnabled: v }))}
+                    />
+                  </div>
+
                   <p className="text-sm text-muted-foreground">
                     Variáveis disponíveis: {'{nome}'}, {'{barbearia}'}
                   </p>
 
-                  <div className="space-y-4">
+                  <div className="space-y-4" style={{ opacity: notificationSettings.funnelAutomationEnabled ? 1 : 0.4, pointerEvents: notificationSettings.funnelAutomationEnabled ? 'auto' : 'none' }}>
                     <div className="space-y-2 p-4 rounded-lg border border-border/50 bg-card/30">
                       <div className="flex items-center justify-between">
                         <div>
