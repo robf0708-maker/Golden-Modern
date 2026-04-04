@@ -71,6 +71,67 @@ export function useLogout() {
   });
 }
 
+// ============ TEAM ============
+
+export type TeamMember = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string | null;
+  role: "owner" | "manager";
+  createdAt: string;
+};
+
+export function useTeam() {
+  return useQuery<TeamMember[]>({
+    queryKey: ["/team"],
+    queryFn: () => fetchAPI("/team"),
+  });
+}
+
+export function useInviteTeamMember() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { name: string; email: string; password: string; phone?: string; role: "owner" | "manager" }) =>
+      fetchAPI("/team/invite", { method: "POST", body: JSON.stringify(data) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/team"] });
+    },
+  });
+}
+
+export function useUpdateTeamMember() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: string; name?: string; phone?: string; role?: "owner" | "manager" }) =>
+      fetchAPI(`/team/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/team"] });
+    },
+  });
+}
+
+export function useDeleteTeamMember() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => fetchAPI(`/team/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/team"] });
+    },
+  });
+}
+
+export function useUpdateProfile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { name?: string; phone?: string; currentPassword?: string; newPassword?: string }) =>
+      fetchAPI("/profile", { method: "PATCH", body: JSON.stringify(data) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/auth/me"] });
+    },
+  });
+}
+
 // ============ BARBERS ============
 
 export function useBarbers() {

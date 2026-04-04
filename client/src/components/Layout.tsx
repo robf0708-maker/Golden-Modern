@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
-import { 
+import {
   LayoutDashboard,
   Calendar,
   Scissors,
   Users,
+  Users2,
   ShoppingBag,
   Package,
   CreditCard,
@@ -20,10 +21,23 @@ import {
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
+import { useAuth, useLogout } from "@/lib/api";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const { data: auth } = useAuth();
+  const logoutMutation = useLogout();
+
+  const handleLogout = async () => {
+    await logoutMutation.mutateAsync();
+    setLocation("/");
+  };
+
+  const currentUser = auth?.user;
+  const initials = currentUser?.name
+    ? currentUser.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)
+    : "AD";
 
   const navigation = [
     { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
@@ -38,6 +52,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { name: "Assinaturas", href: "/subscriptions", icon: RefreshCw },
     { name: "Caixa", href: "/finance", icon: DollarSign },
     { name: "Comissões", href: "/comissoes", icon: Percent },
+    { name: "Equipe", href: "/team", icon: Users2 },
     { name: "Configurações", href: "/settings", icon: Settings },
   ];
 
@@ -81,19 +96,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="p-4 border-t border-sidebar-border">
           <div className="flex items-center gap-3 mb-4 px-2">
             <Avatar className="h-10 w-10 border border-primary/20">
-              <AvatarImage src="https://github.com/shadcn.png" />
-              <AvatarFallback>AD</AvatarFallback>
+              <AvatarFallback>{initials}</AvatarFallback>
             </Avatar>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">Admin User</p>
-              <p className="text-xs text-muted-foreground truncate">admin@barbergold.com</p>
+              <p className="text-sm font-medium truncate">{currentUser?.name || "Usuário"}</p>
+              <p className="text-xs text-muted-foreground truncate">{currentUser?.email || ""}</p>
             </div>
           </div>
-          <Button variant="ghost" className="w-full justify-start text-muted-foreground hover:text-destructive hover:bg-destructive/10" asChild>
-            <Link href="/">
-              <LogOut className="mr-2 h-4 w-4" />
-              Sair
-            </Link>
+          <Button
+            variant="ghost"
+            className="w-full justify-start text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+            onClick={handleLogout}
+          >
+            <LogOut className="mr-2 h-4 w-4" />
+            Sair
           </Button>
         </div>
       </aside>

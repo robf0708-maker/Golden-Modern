@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
+import Layout from "@/components/Layout";
 import {
   useCampaigns, useCampaign, useCreateCampaign,
   useStopCampaign, useFilterClients, useClients
@@ -48,6 +49,7 @@ export default function Campanhas() {
   }
 
   return (
+    <Layout>
     <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -89,6 +91,7 @@ export default function Campanhas() {
         <CampaignDetail id={selectedCampaignId} />
       )}
     </div>
+    </Layout>
   );
 }
 

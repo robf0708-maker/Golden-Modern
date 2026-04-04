@@ -58,6 +58,17 @@ function requireAuth(req: Request, res: Response, next: any) {
   next();
 }
 
+async function requireOwner(req: Request, res: Response, next: any) {
+  if (!req.session?.userId) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const user = await storage.getUserById(req.session.userId);
+  if (!user || user.role !== "owner") {
+    return res.status(403).json({ error: "Apenas o dono da conta pode realizar esta ação" });
+  }
+  next();
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -101,7 +112,7 @@ export async function registerRoutes(
         email: data.email,
         password: hashedPassword,
         barbershopId: barbershop.id,
-        role: "admin",
+        role: "owner",
       });
       console.log(`[Auth] Usuário criado: ${user.id}`);
 
@@ -110,7 +121,7 @@ export async function registerRoutes(
       req.session.barbershopId = user.barbershopId;
 
       console.log(`[Auth] Signup bem-sucedido: ${data.email}`);
-      res.json({ user: { id: user.id, email: user.email, name: user.name, barbershopId: user.barbershopId } });
+      res.json({ user: { id: user.id, email: user.email, name: user.name, phone: user.phone, role: user.role, barbershopId: user.barbershopId } });
     } catch (error: any) {
       console.error('[Auth] Erro no signup:', error);
       res.status(400).json({ error: error.message });
@@ -145,7 +156,7 @@ export async function registerRoutes(
       req.session.userId = user.id;
       req.session.barbershopId = user.barbershopId;
 
-      res.json({ user: { id: user.id, email: user.email, name: user.name, barbershopId: user.barbershopId } });
+      res.json({ user: { id: user.id, email: user.email, name: user.name, phone: user.phone, role: user.role, barbershopId: user.barbershopId } });
     } catch (error: any) {
       res.status(400).json({ error: error.message });
     }
@@ -164,7 +175,7 @@ export async function registerRoutes(
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
-    res.json({ user: { id: user.id, email: user.email, name: user.name, barbershopId: user.barbershopId } });
+    res.json({ user: { id: user.id, email: user.email, name: user.name, phone: user.phone, role: user.role, barbershopId: user.barbershopId } });
   });
 
   // Forgot Password
@@ -416,6 +427,134 @@ export async function registerRoutes(
     });
     
     res.json(enriched);
+  });
+
+  // ============ TEAM MANAGEMENT ============
+
+  // Listar usuários da barbearia
+  app.get("/api/team", requireAuth, async (req, res) => {
+    try {
+      const users = await storage.getUsersByBarbershop(req.session.barbershopId!);
+      const safeUsers = users.map(u => ({ id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, createdAt: u.createdAt }));
+      res.json(safeUsers);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Convidar novo usuário (somente owner)
+  app.post("/api/team/invite", requireOwner, async (req, res) => {
+    try {
+      const inviteSchema = z.object({
+        name: z.string().min(1),
+        email: z.string().email(),
+        password: z.string().min(6),
+        phone: z.string().optional(),
+        role: z.enum(["owner", "manager"]).default("manager"),
+      });
+      const data = inviteSchema.parse(req.body);
+
+      const existing = await storage.getUserByEmail(data.email);
+      if (existing) {
+        return res.status(400).json({ error: "Email já cadastrado" });
+      }
+
+      const hashedPassword = await bcrypt.hash(data.password, 10);
+      const user = await storage.createUser({
+        name: data.name,
+        email: data.email,
+        password: hashedPassword,
+        phone: data.phone || null,
+        barbershopId: req.session.barbershopId!,
+        role: data.role,
+      });
+
+      res.json({ id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role, createdAt: user.createdAt });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Atualizar usuário da equipe (somente owner)
+  app.patch("/api/team/:id", requireOwner, async (req, res) => {
+    try {
+      const updateSchema = z.object({
+        name: z.string().min(1).optional(),
+        phone: z.string().optional(),
+        role: z.enum(["owner", "manager"]).optional(),
+      });
+      const data = updateSchema.parse(req.body);
+
+      // Verificar que o usuário pertence à mesma barbearia
+      const target = await storage.getUserById(req.params.id);
+      if (!target || target.barbershopId !== req.session.barbershopId) {
+        return res.status(404).json({ error: "Usuário não encontrado" });
+      }
+
+      const updated = await storage.updateUser(req.params.id, data);
+      if (!updated) return res.status(404).json({ error: "Usuário não encontrado" });
+
+      res.json({ id: updated.id, name: updated.name, email: updated.email, phone: updated.phone, role: updated.role });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Remover usuário da equipe (somente owner, não pode remover a si mesmo)
+  app.delete("/api/team/:id", requireOwner, async (req, res) => {
+    try {
+      if (req.params.id === req.session.userId) {
+        return res.status(400).json({ error: "Você não pode remover sua própria conta" });
+      }
+
+      const target = await storage.getUserById(req.params.id);
+      if (!target || target.barbershopId !== req.session.barbershopId) {
+        return res.status(404).json({ error: "Usuário não encontrado" });
+      }
+
+      await storage.deleteUser(req.params.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Atualizar próprio perfil (nome, telefone, senha)
+  app.patch("/api/profile", requireAuth, async (req, res) => {
+    try {
+      const profileSchema = z.object({
+        name: z.string().min(1).optional(),
+        phone: z.string().optional(),
+        currentPassword: z.string().optional(),
+        newPassword: z.string().min(6).optional(),
+      });
+      const data = profileSchema.parse(req.body);
+
+      const user = await storage.getUserById(req.session.userId!);
+      if (!user) return res.status(404).json({ error: "Usuário não encontrado" });
+
+      // Atualizar senha se fornecida
+      if (data.newPassword) {
+        if (!data.currentPassword) {
+          return res.status(400).json({ error: "Informe a senha atual para alterar a senha" });
+        }
+        const valid = await bcrypt.compare(data.currentPassword, user.password);
+        if (!valid) {
+          return res.status(400).json({ error: "Senha atual incorreta" });
+        }
+        const hashed = await bcrypt.hash(data.newPassword, 10);
+        await storage.updateUserPassword(user.id, hashed);
+      }
+
+      const updated = await storage.updateUser(user.id, {
+        ...(data.name && { name: data.name }),
+        ...(data.phone !== undefined && { phone: data.phone }),
+      });
+
+      res.json({ id: updated!.id, name: updated!.name, email: updated!.email, phone: updated!.phone, role: updated!.role });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
   });
 
   // ============ BARBERSHOP SETTINGS ============

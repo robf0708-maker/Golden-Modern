@@ -9,8 +9,9 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   password: text("password").notNull(),
   name: text("name").notNull(),
+  phone: text("phone"), // WhatsApp do admin (para notificações)
   barbershopId: varchar("barbershop_id").notNull(),
-  role: text("role").notNull().default("admin"), // admin, barber, etc
+  role: text("role").notNull().default("owner"), // owner = dono da conta, manager = gerente convidado
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

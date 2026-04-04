@@ -109,7 +109,10 @@ export interface IStorage {
   // Users & Auth
   getUserById(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
+  getUsersByBarbershop(barbershopId: string): Promise<User[]>;
   createUser(user: InsertUser): Promise<User>;
+  updateUser(id: string, data: Partial<Pick<InsertUser, 'name' | 'role' | 'phone'>>): Promise<User | undefined>;
+  deleteUser(id: string): Promise<void>;
   
   // Barbershops
   getBarbershop(id: string): Promise<Barbershop | undefined>;
@@ -1729,6 +1732,19 @@ export class DbStorage implements IStorage {
 
   async updateUserPassword(userId: string, hashedPassword: string): Promise<void> {
     await db.update(schema.users).set({ password: hashedPassword }).where(eq(schema.users.id, userId));
+  }
+
+  async getUsersByBarbershop(barbershopId: string): Promise<User[]> {
+    return await db.select().from(schema.users).where(eq(schema.users.barbershopId, barbershopId));
+  }
+
+  async updateUser(id: string, data: Partial<Pick<InsertUser, 'name' | 'role' | 'phone'>>): Promise<User | undefined> {
+    const result = await db.update(schema.users).set(data).where(eq(schema.users.id, id)).returning();
+    return result[0];
+  }
+
+  async deleteUser(id: string): Promise<void> {
+    await db.delete(schema.users).where(eq(schema.users.id, id));
   }
 
   // Subscriptions (Assinaturas recorrentes)

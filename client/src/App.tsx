@@ -23,6 +23,7 @@ import Barbers from "@/pages/Barbers";
 import Finance from "@/pages/Finance";
 import Commissions from "@/pages/Commissions";
 import Settings from "@/pages/Settings";
+import Team from "@/pages/Team";
 import PublicBooking from "@/pages/PublicBooking";
 import BarberLogin from "@/pages/BarberLogin";
 import BarberDashboard from "@/pages/BarberDashboard";
@@ -112,7 +113,12 @@ function Router() {
           <Settings />
         </AuthGuard>
       </Route>
-      
+      <Route path="/team">
+        <AuthGuard>
+          <Team />
+        </AuthGuard>
+      </Route>
+
       {/* Public booking page - no auth required */}
       <Route path="/agendar/:barbershopId" component={PublicBooking} />
       
