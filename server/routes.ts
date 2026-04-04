@@ -4567,24 +4567,43 @@ export async function registerRoutes(
       // Instância desconectada — obter QR code para o admin escanear
       let qrcode: string | null = null;
       let lastError: string | null = null;
+      const encodedName = encodeURIComponent(instanceName);
 
-      // uazapiGO: o QR code fica em instance.qrcode no GET /instance/status
-      // Se estiver vazio, chamar POST /instance/connect para iniciar a sessão e gerar o QR
-      // IMPORTANTE: usar body vazio no POST — não passar instanceName para evitar erro de limite
-
-      // 1) GET /instance/status — verifica se já tem QR pronto no campo instance.qrcode
+      // 1) GET /instance/qrcode (token no header identifica instância)
       try {
-        const r = await fetch(`${apiUrl}/instance/status`, { headers: { 'token': instanceToken } });
+        const r = await fetch(`${apiUrl}/instance/qrcode`, { headers: { 'token': instanceToken } });
         const d = await r.json().catch(() => ({}));
         if (r.ok) {
           qrcode = extractQrcode(d);
-          // Se status for 'connecting' e tiver QR, usar direto
-          if (qrcode) console.log('[WhatsApp] QR obtido via GET /instance/status');
+          if (qrcode) console.log('[WhatsApp] QR obtido via GET /instance/qrcode');
         }
       } catch { /* continua */ }
 
-      // 2) POST /instance/connect (body vazio — token no header identifica instância)
-      // Isso inicia a sessão e retorna o QR code gerado
+      // 2) GET /instance/qrcode/{name}
+      if (!qrcode) {
+        try {
+          const r = await fetch(`${apiUrl}/instance/qrcode/${encodedName}`, { headers: { 'token': instanceToken } });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok) {
+            qrcode = extractQrcode(d);
+            if (qrcode) console.log('[WhatsApp] QR obtido via GET /instance/qrcode/{name}');
+          }
+        } catch { /* continua */ }
+      }
+
+      // 3) GET /instance/status — verifica se já tem QR pronto no campo instance.qrcode
+      if (!qrcode) {
+        try {
+          const r = await fetch(`${apiUrl}/instance/status`, { headers: { 'token': instanceToken } });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok) {
+            qrcode = extractQrcode(d);
+            if (qrcode) console.log('[WhatsApp] QR obtido via GET /instance/status');
+          }
+        } catch { /* continua */ }
+      }
+
+      // 4) POST /instance/connect (body vazio — token no header identifica instância)
       if (!qrcode) {
         try {
           const r = await fetch(`${apiUrl}/instance/connect`, {
@@ -4593,13 +4612,11 @@ export async function registerRoutes(
             body: JSON.stringify({}),
           });
           const d = await r.json().catch(() => ({}));
-          console.log('[WhatsApp] POST /instance/connect:', r.status, JSON.stringify(d).slice(0, 200));
+          console.log('[WhatsApp] POST /instance/connect (qrcode poll):', r.status, JSON.stringify(d).slice(0, 200));
           if (r.ok) {
             qrcode = extractQrcode(d);
           } else {
             const errStr = String(d?.message || d?.error || '').toLowerCase();
-            // "Maximum number of instances connected" = instância já está conectada no WhatsApp
-            // Ocorre quando o logout não funcionou ou a sessão ainda está ativa
             if (errStr.includes('maximum') || errStr.includes('limit') || r.status === 429) {
               console.log('[WhatsApp] Instância reportada como conectada pelo UazAPI — sincronizando DB');
               const recheck = await checkUazStatus(apiUrl, instanceToken, instanceName);
@@ -4615,11 +4632,11 @@ export async function registerRoutes(
         } catch { /* continua */ }
       }
 
-      // 3) Após POST /instance/connect, buscar QR no GET /instance/status (pode demorar ~1s para gerar)
+      // 5) Após POST /instance/connect, tentar GET /instance/qrcode novamente (pode demorar ~1s para gerar)
       if (!qrcode) {
         await new Promise(r => setTimeout(r, 1200));
         try {
-          const r = await fetch(`${apiUrl}/instance/status`, { headers: { 'token': instanceToken } });
+          const r = await fetch(`${apiUrl}/instance/qrcode`, { headers: { 'token': instanceToken } });
           const d = await r.json().catch(() => ({}));
           if (r.ok) qrcode = extractQrcode(d);
         } catch { /* continua */ }
