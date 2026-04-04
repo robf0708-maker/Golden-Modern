@@ -361,7 +361,7 @@ export default function Settings() {
       return res.json();
     },
     refetchInterval: whatsappConnecting ? 3000 : false,
-    enabled: whatsappConnecting || (!!chatbotSettings.uazapiInstanceName && !chatbotSettings.whatsappConnected),
+    enabled: whatsappConnecting,
   });
 
   useEffect(() => {
@@ -374,7 +374,7 @@ export default function Settings() {
   }, [whatsappStatus?.connected, whatsappStatus?.phone]);
 
   // Buscar QR code quando estiver aguardando conexão (inclui ao recarregar a página)
-  const awaitingConnection = (whatsappConnecting || chatbotSettings.uazapiInstanceName) && !chatbotSettings.whatsappConnected;
+  const awaitingConnection = whatsappConnecting && !chatbotSettings.whatsappConnected;
   useEffect(() => {
     if (!awaitingConnection || !chatbotSettings.uazapiInstanceName) return;
     const fetchQr = async () => {
@@ -1562,7 +1562,7 @@ export default function Settings() {
                         Desconectar
                       </Button>
                     </div>
-                  ) : whatsappConnecting || (chatbotSettings.uazapiInstanceName && !chatbotSettings.whatsappConnected) ? (
+                  ) : whatsappConnecting ? (
                     <div className="space-y-4">
                       {whatsappQrcode ? (
                         <div className="flex flex-col items-center gap-3">
