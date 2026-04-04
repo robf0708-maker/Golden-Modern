@@ -4567,7 +4567,6 @@ export async function registerRoutes(
       // Instância desconectada — obter QR code para o admin escanear
       let qrcode: string | null = null;
       let lastError: string | null = null;
-      const encodedName = encodeURIComponent(instanceName);
 
       // 1) GET /instance/qrcode (token no header identifica instância)
       try {
