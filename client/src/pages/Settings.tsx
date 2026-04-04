@@ -391,6 +391,13 @@ export default function Settings() {
           } else if (data.qrcode) {
             setWhatsappQrcode(String(data.qrcode));
           }
+        } else if (res.status === 401) {
+          // Token inválido — parar polling e avisar usuário para clicar Conectar novamente
+          const data = await res.json().catch(() => ({}));
+          setWhatsappConnecting(false);
+          setWhatsappQrcode(null);
+          queryClient.invalidateQueries({ queryKey: ['/api/chatbot-settings'] });
+          toast({ title: 'Reconexão necessária', description: data.error || 'Clique em "Conectar WhatsApp" novamente.', variant: 'destructive' });
         }
       } catch { /* ignore */ }
     };

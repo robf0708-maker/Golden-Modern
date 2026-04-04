@@ -4359,7 +4359,22 @@ export async function registerRoutes(
       // Reutilizar instância existente se já tivermos no banco (evita estourar limite)
       const settings = await storage.getChatbotSettings(barbershopId);
       if (settings?.uazapiInstanceName === instanceName && settings?.uazapiInstanceToken) {
-        instanceToken = settings.uazapiInstanceToken;
+        // Validar token antes de reutilizar — se retornar 401 (token inválido), forçar recriação
+        const tokenCheck = await fetch(`${apiUrl}/instance/status`, {
+          headers: { 'token': settings.uazapiInstanceToken },
+        }).catch(() => null);
+        if (tokenCheck?.status === 401) {
+          console.log('[WhatsApp] Token salvo inválido (401) — forçando recriação:', instanceName);
+          await storage.updateChatbotWhatsappFields(barbershopId, {
+            uazapiInstanceToken: null,
+            uazapiInstanceName: null,
+            whatsappConnected: false,
+            whatsappPhone: null,
+          });
+          // instanceToken permanece null → bloco abaixo criará nova instância
+        } else {
+          instanceToken = settings.uazapiInstanceToken;
+        }
       }
 
       if (!instanceToken) {
@@ -4616,6 +4631,17 @@ export async function registerRoutes(
             qrcode = extractQrcode(d);
           } else {
             const errStr = String(d?.message || d?.error || '').toLowerCase();
+            if (r.status === 401 || errStr.includes('invalid token')) {
+              // Token inválido — limpar DB para que próximo "Conectar" crie instância nova
+              console.log('[WhatsApp] Token inválido (401) detectado no polling QR — limpando DB:', instanceName);
+              await storage.updateChatbotWhatsappFields(barbershopId, {
+                uazapiInstanceToken: null,
+                uazapiInstanceName: null,
+                whatsappConnected: false,
+                whatsappPhone: null,
+              });
+              return res.status(401).json({ error: 'Token inválido. Clique em "Conectar WhatsApp" novamente.' });
+            }
             if (errStr.includes('maximum') || errStr.includes('limit') || r.status === 429) {
               console.log('[WhatsApp] Instância reportada como conectada pelo UazAPI — sincronizando DB');
               const recheck = await checkUazStatus(apiUrl, instanceToken, instanceName);
