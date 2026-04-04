@@ -57,7 +57,14 @@ const migrations = [
      created_at TIMESTAMP NOT NULL DEFAULT NOW()
    )`,
 
-  // 5. Tabela barber_services
+  // 5. Coluna phone em users
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS phone text`,
+
+  // 6. Colunas de fechamento de caixa em notification_settings
+  `ALTER TABLE notification_settings ADD COLUMN IF NOT EXISTS cash_closing_enabled BOOLEAN NOT NULL DEFAULT false`,
+  `ALTER TABLE notification_settings ADD COLUMN IF NOT EXISTS cash_closing_phone TEXT`,
+
+  // 7. Tabela barber_services
   `CREATE TABLE IF NOT EXISTS barber_services (
      id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
      barber_id VARCHAR NOT NULL REFERENCES barbers(id) ON DELETE CASCADE,

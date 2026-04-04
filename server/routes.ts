@@ -2951,6 +2951,96 @@ export async function registerRoutes(
         updateData.closedAt = new Date(updateData.closedAt);
       }
       const cashRegister = await storage.updateCashRegister(req.params.id, updateData);
+
+      // Enviar aviso de fechamento de caixa para o admin via WhatsApp (se habilitado)
+      if (updateData.status === 'closed') {
+        try {
+          const notifSettings = await storage.getNotificationSettings(req.session.barbershopId!);
+          if (notifSettings?.cashClosingEnabled) {
+            const barbershop = await storage.getBarbershop(req.session.barbershopId!);
+            // Usar número configurado nas notificações; fallback para telefone do dono
+            const adminPhone = notifSettings.cashClosingPhone || (() => {
+              // fallback assíncrono não funciona aqui, mas cashClosingPhone deve sempre ser preenchido
+              return null;
+            })();
+
+            if (adminPhone) {
+              // Buscar comandas do período do caixa para breakdown por forma de pagamento
+              const allComandas = await storage.getComandas(req.session.barbershopId!, 'closed');
+              const registerOpenedAt = cashRegister.openedAt ? new Date(cashRegister.openedAt) : new Date(0);
+              const registerClosedAt = new Date();
+
+              const periodComandas = allComandas.filter((c: any) => {
+                if (!c.paidAt) return false;
+                const paid = new Date(c.paidAt);
+                return paid >= registerOpenedAt && paid <= registerClosedAt;
+              });
+
+              let totalDinheiro = 0;
+              let totalPix = 0;
+              let totalCredito = 0;
+              let totalDebito = 0;
+              let totalOutros = 0;
+
+              for (const c of periodComandas) {
+                const val = parseFloat(c.total || '0');
+                const pm = c.paymentMethod || '';
+                if (pm === 'dinheiro') totalDinheiro += val;
+                else if (pm === 'pix') totalPix += val;
+                else if (pm === 'credito') totalCredito += val;
+                else if (pm === 'debito') totalDebito += val;
+                else if (pm === 'split' && c.paymentDetails) {
+                  const details = c.paymentDetails as any;
+                  totalDinheiro += parseFloat(details.dinheiro || '0');
+                  totalPix += parseFloat(details.pix || '0');
+                  totalCredito += parseFloat(details.credito || '0');
+                  totalDebito += parseFloat(details.debito || '0');
+                } else {
+                  totalOutros += val;
+                }
+              }
+
+              const totalGeral = parseFloat(cashRegister.closingAmount || '0');
+              const esperado = parseFloat(cashRegister.expectedAmount || '0');
+              const diferenca = parseFloat(cashRegister.difference || '0');
+              const now = new Date();
+              const dateStr = now.toLocaleDateString('pt-BR');
+              const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+              let lines = [
+                `*Fechamento de Caixa* 🔐`,
+                `*${barbershop?.name || 'Barbearia'}* — ${dateStr} às ${timeStr}`,
+                ``,
+                `*Resumo por forma de pagamento:*`,
+              ];
+              if (totalDinheiro > 0)  lines.push(`💵 Dinheiro: R$ ${totalDinheiro.toFixed(2)}`);
+              if (totalPix > 0)       lines.push(`📲 PIX: R$ ${totalPix.toFixed(2)}`);
+              if (totalCredito > 0)   lines.push(`💳 Crédito: R$ ${totalCredito.toFixed(2)}`);
+              if (totalDebito > 0)    lines.push(`💳 Débito: R$ ${totalDebito.toFixed(2)}`);
+              if (totalOutros > 0)    lines.push(`📦 Outros: R$ ${totalOutros.toFixed(2)}`);
+              lines.push(``);
+              lines.push(`*Comandas fechadas:* ${periodComandas.length}`);
+              lines.push(`*Valor contado:* R$ ${totalGeral.toFixed(2)}`);
+              lines.push(`*Valor esperado:* R$ ${esperado.toFixed(2)}`);
+              if (Math.abs(diferenca) > 0.01) {
+                const sinal = diferenca >= 0 ? '+' : '';
+                lines.push(`*Diferença:* ${sinal}R$ ${diferenca.toFixed(2)} ${diferenca >= 0 ? '✅' : '⚠️'}`);
+              } else {
+                lines.push(`*Diferença:* R$ 0,00 ✅`);
+              }
+
+              const message = lines.join('\n');
+              const provider = getProvider(notifSettings.provider);
+              await provider.send({ to: adminPhone, message });
+              console.log(`[CashClosing] Aviso de fechamento enviado para ${adminPhone}`);
+            }
+          }
+        } catch (notifyError) {
+          console.error('[CashClosing] Erro ao enviar aviso de fechamento:', notifyError);
+          // Não bloquear o fechamento por falha no aviso
+        }
+      }
+
       res.json(cashRegister);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -4088,6 +4178,8 @@ export async function registerRoutes(
         predictedReturnEnabled: z.boolean().optional(),
         professionalBookingEnabled: z.boolean().optional(),
         professionalCancellationEnabled: z.boolean().optional(),
+        cashClosingEnabled: z.boolean().optional(),
+        cashClosingPhone: z.string().optional().nullable(),
         welcomeTemplate: z.string().optional().nullable(),
         reminder1DayTemplate: z.string().optional().nullable(),
         reminder1HourTemplate: z.string().optional().nullable(),

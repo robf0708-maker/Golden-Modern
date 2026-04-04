@@ -103,6 +103,8 @@ export default function Settings() {
     predictedReturnTemplate: '',
     professionalBookingEnabled: false,
     professionalCancellationEnabled: false,
+    cashClosingEnabled: false,
+    cashClosingPhone: '',
   });
 
   const [chatbotSettings, setChatbotSettings] = useState({
@@ -195,6 +197,8 @@ export default function Settings() {
         predictedReturnTemplate: notifSettings.predictedReturnTemplate || '',
         professionalBookingEnabled: notifSettings.professionalBookingEnabled ?? false,
         professionalCancellationEnabled: notifSettings.professionalCancellationEnabled ?? false,
+        cashClosingEnabled: (notifSettings as any).cashClosingEnabled ?? false,
+        cashClosingPhone: (notifSettings as any).cashClosingPhone || '',
       });
     }
   }, [notifSettings]);
@@ -1190,6 +1194,39 @@ export default function Settings() {
                           data-testid="switch-professional-cancellation"
                         />
                       </div>
+                    </div>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Bell className="h-5 w-5 text-green-500" />
+                    <div>
+                      <h4 className="font-medium text-foreground">Fechamento de Caixa</h4>
+                      <p className="text-sm text-muted-foreground">Enviar resumo do caixa para o admin via WhatsApp ao fechar o caixa</p>
+                    </div>
+                  </div>
+                  <div className="p-4 rounded-lg bg-background/50 border border-border space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium">Aviso de fechamento</p>
+                        <p className="text-sm text-muted-foreground">Enviar dinheiro, PIX, cartão e total ao fechar o caixa</p>
+                      </div>
+                      <Switch
+                        checked={(notificationSettings as any).cashClosingEnabled}
+                        onCheckedChange={(v) => setNotificationSettings(prev => ({ ...prev, cashClosingEnabled: v }))}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="cashClosingPhone" className="text-sm text-muted-foreground">WhatsApp do admin (com DDD, ex: 11999998888)</Label>
+                      <Input
+                        id="cashClosingPhone"
+                        placeholder="11999998888"
+                        value={(notificationSettings as any).cashClosingPhone || ''}
+                        onChange={(e) => setNotificationSettings(prev => ({ ...prev, cashClosingPhone: e.target.value }))}
+                      />
                     </div>
                   </div>
                 </div>

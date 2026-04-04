@@ -378,6 +378,9 @@ export const notificationSettings = pgTable("notification_settings", {
   // Avisos para o Profissional
   professionalBookingEnabled: boolean("professional_booking_enabled").notNull().default(false),
   professionalCancellationEnabled: boolean("professional_cancellation_enabled").notNull().default(false),
+  // Aviso de fechamento de caixa para o admin
+  cashClosingEnabled: boolean("cash_closing_enabled").notNull().default(false),
+  cashClosingPhone: text("cash_closing_phone"), // WhatsApp do admin para receber o aviso
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
