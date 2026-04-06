@@ -52,14 +52,14 @@ declare module "express-session" {
 
 // Middleware to check auth
 function requireAuth(req: Request, res: Response, next: any) {
-  if (!req.session?.userId) {
+  if (!req.session?.userId || !req.session?.barbershopId) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   next();
 }
 
 async function requireOwner(req: Request, res: Response, next: any) {
-  if (!req.session?.userId) {
+  if (!req.session?.userId || !req.session?.barbershopId) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   const user = await storage.getUserById(req.session.userId);
@@ -2870,13 +2870,21 @@ export async function registerRoutes(
   // ============ CASH REGISTER ============
   
   app.get("/api/cash-register/current", requireAuth, async (req, res) => {
-    const cashRegister = await storage.getOpenCashRegister(req.session.barbershopId!);
-    res.json(cashRegister || null);
+    try {
+      const cashRegister = await storage.getOpenCashRegister(req.session.barbershopId!);
+      res.json(cashRegister || null);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.get("/api/cash-register/history", requireAuth, async (req, res) => {
-    const history = await storage.getCashRegisterHistory(req.session.barbershopId!);
-    res.json(history);
+    try {
+      const history = await storage.getCashRegisterHistory(req.session.barbershopId!);
+      res.json(history);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.post("/api/cash-register", requireAuth, async (req, res) => {
@@ -2898,23 +2906,27 @@ export async function registerRoutes(
   });
 
   app.get("/api/cash-register/open-comandas-check", requireAuth, async (req, res) => {
-    const comandas = await storage.getComandas(req.session.barbershopId!, "open");
-    const today = new Date();
-    const todayComandas = comandas.filter((c: any) => {
-      const created = new Date(c.createdAt);
-      return created.toDateString() === today.toDateString();
-    });
-    const oldComandas = comandas.filter((c: any) => {
-      const created = new Date(c.createdAt);
-      return created.toDateString() !== today.toDateString();
-    });
-    res.json({ 
-      hasOpenComandas: todayComandas.length > 0, 
-      openComandas: todayComandas,
-      hasOldComandas: oldComandas.length > 0,
-      oldComandas: oldComandas,
-      totalOpen: comandas.length
-    });
+    try {
+      const comandas = await storage.getComandas(req.session.barbershopId!, "open");
+      const today = new Date();
+      const todayComandas = comandas.filter((c: any) => {
+        const created = new Date(c.createdAt);
+        return created.toDateString() === today.toDateString();
+      });
+      const oldComandas = comandas.filter((c: any) => {
+        const created = new Date(c.createdAt);
+        return created.toDateString() !== today.toDateString();
+      });
+      res.json({
+        hasOpenComandas: todayComandas.length > 0,
+        openComandas: todayComandas,
+        hasOldComandas: oldComandas.length > 0,
+        oldComandas: oldComandas,
+        totalOpen: comandas.length
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.patch("/api/cash-register/:id", requireAuth, async (req, res) => {
@@ -3048,8 +3060,12 @@ export async function registerRoutes(
   });
 
   app.get("/api/cash-register/:id/transactions", requireAuth, async (req, res) => {
-    const transactions = await storage.getCashTransactions(req.params.id);
-    res.json(transactions);
+    try {
+      const transactions = await storage.getCashTransactions(req.params.id);
+      res.json(transactions);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.post("/api/cash-register/:id/transactions", requireAuth, async (req, res) => {
