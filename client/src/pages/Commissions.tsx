@@ -86,6 +86,25 @@ export default function Commissions() {
     selectedBarber !== "all" ? selectedBarber : undefined
   );
 
+  /** Compra já entrou em algum fechamento de comissão (mesmo barbeiro e data dentro do período). */
+  const isPurchaseCoveredByCommissionClose = (
+    barberId: string | undefined,
+    purchaseDateRaw: string | Date | null | undefined
+  ) => {
+    if (!barberId || !purchaseDateRaw) return false;
+    try {
+      const purchaseDate = toZonedTime(new Date(purchaseDateRaw), BRAZIL_TIMEZONE);
+      return commissionPayments.some((pay: any) => {
+        if (String(pay.barberId) !== String(barberId)) return false;
+        const periodStart = toZonedTime(new Date(pay.periodStart), BRAZIL_TIMEZONE);
+        const periodEnd = toZonedTime(new Date(pay.periodEnd), BRAZIL_TIMEZONE);
+        return purchaseDate >= startOfDay(periodStart) && purchaseDate <= endOfDay(periodEnd);
+      });
+    } catch {
+      return false;
+    }
+  };
+
   const payMutation = usePayCommission();
   const closeCommissionsMutation = useCloseCommissions();
   
@@ -242,6 +261,9 @@ export default function Commissions() {
   const pendingCommissionsList = positiveCommissionsWithNet.filter((c: any) => !c.paid);
   const paidCommissionsList = positiveCommissionsWithNet.filter((c: any) => c.paid);
   const pendingDeductionsList = deductionCommissions.filter((c: any) => !c.paid);
+  const pendingUnsettledBarberPurchases = barberPurchases.filter(
+    (p: any) => !isPurchaseCoveredByCommissionClose(p.barberId, p.date)
+  );
 
   // Agrupar somente comissões positivas por barbeiro (usando valores líquidos)
   const commissionsByBarber = positiveCommissionsWithNet.reduce((acc: any, c: any) => {
@@ -293,11 +315,16 @@ export default function Commissions() {
 
   const getBarberDeductions = (barberId: string) => {
     const purchaseDeductions = barberPurchases
-      .filter((p: any) => p.barberId === barberId)
+      .filter(
+        (p: any) =>
+          p.barberId === barberId && !isPurchaseCoveredByCommissionClose(p.barberId, p.date)
+      )
       .reduce((acc: number, p: any) => acc + parseFloat(p.total || 0), 0);
-    const commissionDeductions = Math.abs(deductionCommissions
-      .filter((c: any) => c.barberId === barberId)
-      .reduce((acc: number, c: any) => acc + parseFloat(c.amount || 0), 0));
+    const commissionDeductions = Math.abs(
+      deductionCommissions
+        .filter((c: any) => c.barberId === barberId && !c.paid)
+        .reduce((acc: number, c: any) => acc + parseFloat(c.amount || 0), 0)
+    );
     return purchaseDeductions + commissionDeductions;
   };
 
@@ -499,7 +526,7 @@ export default function Commissions() {
                 -R$ {totalDeductions.toFixed(2)}
               </p>
               <p className="text-xs text-muted-foreground mt-1">
-                {pendingDeductionsList.length + barberPurchases.filter((p: any) => !pendingDeductionsList.some((d: any) => d.itemName === p.productName && d.barberId === p.barberId)).length} itens
+                {pendingDeductionsList.length + pendingUnsettledBarberPurchases.filter((p: any) => !pendingDeductionsList.some((d: any) => d.itemName === p.productName && d.barberId === p.barberId)).length} itens
               </p>
             </CardContent>
           </Card>
