@@ -106,7 +106,8 @@ export async function handleIncomingMessage(incoming: IncomingMessage): Promise<
   }
 
   let client = await storage.getClientByPhone(barbershopId, phone);
-  const isNewClient = !client;
+  const isPhoneAsName = (name: string | null) => /^[\d\s+()-]+$/.test((name || '').trim());
+  const isNewClient = !client || isPhoneAsName(client.name);
 
   console.log(`[Chatbot] ====== DIAGNÓSTICO HANDLER ======`);
   console.log(`[Chatbot]   barbershopId recebido: ${barbershopId}`);

@@ -5,6 +5,7 @@ import { getNowAsUtcLocal, getBrazilDateString, getBrazilTimeString } from "../u
 import {
   getNextAvailableSlot,
   getAvailabilitySummaryForBarbers,
+  getLeastBusyBarber,
   checkBarberAvailabilityWithDuration,
   filterFutureSlots,
   normalizeDateStr,
@@ -61,7 +62,7 @@ export interface ResponseData {
         'offer_time' | 'ask_confirmation' | 'booking_confirmed' | 'booking_error' |
         'cancelled' | 'no_availability' | 'error' | 'ask_cancel_scope' |
         'session_expired' | 'max_participants' | 'ask_package_use' | 'inform_existing_appointments' |
-        'ask_companion_name';
+        'ask_companion_name' | 'rescheduling_start';
   barbershopName: string;
   clientName: string;
   currentTime: string;
@@ -167,6 +168,7 @@ const CLASSIFY_INTENT_TOOL: OpenAI.ChatCompletionTool = {
             "book_for_companion",
             "provide_companion_name",
             "select_multiple_services",
+            "reschedule",
             "unclear",
             "non_text",
           ],
@@ -222,7 +224,7 @@ INTENTS VÁLIDOS: provide_name, greeting, cancel_appointment, unclear
 - Se a mensagem é confusa ou irrelevante → unclear`,
 
     'NEED_SERVICE': `Esperando escolha de serviço.
-INTENTS VÁLIDOS: select_service, select_multiple_services, book_for_companion, provide_companion_name, greeting, cancel_appointment, ask_availability, unclear
+INTENTS VÁLIDOS: select_service, select_multiple_services, book_for_companion, provide_companion_name, greeting, cancel_appointment, reschedule, ask_availability, unclear
 - Se menciona UM serviço (corte, barba, etc.) → select_service
 - Se menciona DOIS ou mais serviços (ex: "corte e barba", "corte barba e sobrancelha") → select_multiple_services (value = nomes separados por vírgula, ex: "corte,barba")
 - Se diz "agendar para meu filho/esposa/amigo/outra pessoa", "marcar pra fulano", "quero agendar para outra pessoa" → book_for_companion
@@ -232,7 +234,7 @@ INTENTS VÁLIDOS: select_service, select_multiple_services, book_for_companion, 
 - PROIBIDO usar: no_preference_barber, accept_time, reject_time, reject_booking, confirm_booking neste estado`,
 
     'NEED_BARBER': `Esperando escolha de barbeiro.
-INTENTS VÁLIDOS: select_barber, no_preference_barber, cancel_appointment, greeting, unclear
+INTENTS VÁLIDOS: select_barber, no_preference_barber, cancel_appointment, reschedule, greeting, unclear
 - Se diz "não", "não tenho", "tanto faz", "qualquer um", "sem preferência", "não importa" → SEMPRE no_preference_barber
 - Se menciona nome de barbeiro → select_barber
 - Se a mensagem é confusa ou irrelevante → unclear
@@ -240,7 +242,7 @@ INTENTS VÁLIDOS: select_barber, no_preference_barber, cancel_appointment, greet
 - REGRA ABSOLUTA: "não" ou "não tenho" neste estado NUNCA é reject_booking, é SEMPRE no_preference_barber`,
 
     'NEED_TIME': `Esperando aceitar/rejeitar horário ou informar preferência de horário.
-INTENTS VÁLIDOS: accept_time, reject_time, provide_date, provide_time, select_barber, change_barber, no_preference_barber, cancel_appointment, unclear
+INTENTS VÁLIDOS: accept_time, reject_time, provide_date, provide_time, select_barber, change_barber, no_preference_barber, cancel_appointment, reschedule, unclear
 - Se diz "sim", "pode ser", "ok", "esse", "confirma", "fechado", "bora" → accept_time
 - Se diz "não", "outro horário", "mais tarde", "outro dia" → reject_time
 - Se menciona dia/data → provide_date
@@ -252,7 +254,7 @@ INTENTS VÁLIDOS: accept_time, reject_time, provide_date, provide_time, select_b
 - PROIBIDO usar: reject_booking, confirm_booking neste estado`,
 
     'CONFIRMATION': `Esperando confirmação final ou resposta sobre pacote.
-INTENTS VÁLIDOS: confirm_booking, reject_booking, use_package_yes, use_package_no, cancel_appointment, unclear
+INTENTS VÁLIDOS: confirm_booking, reject_booking, use_package_yes, use_package_no, cancel_appointment, reschedule, unclear
 - Se diz "sim", "pode", "confirma" → confirm_booking ou use_package_yes
 - Se diz "não", "cancelar", "desistir" → reject_booking ou use_package_no
 - Se diz "usar pacote" / "com pacote" → use_package_yes
@@ -286,6 +288,7 @@ REGRAS GERAIS:
   - "segunda", "terça", etc. = calcule a próxima ocorrência
 - Se menciona horário → provide_time (time_value = HH:MM)
 - Se quer cancelar/desmarcar → cancel_appointment
+- Se quer reagendar / mudar horário / trocar data → reschedule
 - non_text é EXCLUSIVAMENTE para mensagens de mídia (áudio, imagem, figurinha, vídeo, documento). Se a mensagem contém QUALQUER texto legível, NUNCA classifique como non_text. Texto confuso = unclear, NUNCA non_text.
 - Se é saudação (oi, olá, bom dia) → greeting
 
@@ -369,6 +372,65 @@ export async function processStateTransition(params: {
       barberName: b?.name || 'Profissional',
     };
   });
+
+  if (intent.intent === 'reschedule') {
+    if (clientAppointments.length === 0) {
+      return {
+        newState: currentState,
+        responseData: {
+          ...baseResponseData,
+          type: 'error',
+          errorMessage: 'Você não tem agendamentos para reagendar.',
+        } as ResponseData,
+        conversationUpdates: {},
+      };
+    }
+
+    const apptToCancel = clientAppointments.length === 1 ? clientAppointments[0] : null;
+    if (apptToCancel) {
+      const result = await cancelAppointment(clientAppointments, 1);
+      if (result.success) {
+        return {
+          newState: 'NEED_SERVICE',
+          responseData: {
+            ...baseResponseData,
+            type: 'rescheduling_start',
+            cancelledDate: result.cancelledDate,
+            cancelledTime: result.cancelledTime,
+            services: services.map(s => ({ id: s.id, name: s.name, duration: s.duration })),
+          } as ResponseData,
+          conversationUpdates: {
+            pendingServiceId: null,
+            pendingBarberId: null,
+            pendingDate: null,
+            pendingTime: null,
+            state: 'idle',
+          },
+          actionTaken: 'appointment_cancelled',
+        };
+      }
+      return {
+        newState: currentState,
+        responseData: {
+          ...baseResponseData,
+          type: 'error',
+          errorMessage: result.error,
+        } as ResponseData,
+        conversationUpdates: {},
+      };
+    }
+
+    // Múltiplos agendamentos: pedir qual reagendar
+    return {
+      newState: 'AWAITING_CANCEL_CONFIRMATION',
+      responseData: {
+        ...baseResponseData,
+        type: 'ask_cancel_scope',
+        existingAppointments: existingAppts,
+      } as ResponseData,
+      conversationUpdates: {},
+    };
+  }
 
   if (intent.intent === 'cancel_appointment') {
     if (clientAppointments.length === 0) {
@@ -808,12 +870,14 @@ async function handleNeedBarber(
       };
     }
   } else if (intent.intent === 'no_preference_barber') {
-    const { earliestBarber } = await getAvailabilitySummaryForBarbers({
+    const { summaries } = await getAvailabilitySummaryForBarbers({
       barbershopId, barbers, serviceDuration, minAdvanceMinutes: minAdvance, maxDaysAhead,
     });
 
-    if (earliestBarber) {
-      selectedBarber = barbers.find(b => b.id === earliestBarber.barberId);
+    const leastBusy = getLeastBusyBarber(summaries);
+    if (leastBusy) {
+      selectedBarber = barbers.find(b => b.id === leastBusy.barberId);
+      console.log(`[StateMachine] Sem preferência → barbeiro menos ocupado: ${leastBusy.barberName} (${leastBusy.slotsToday} slots disponíveis hoje)`);
     }
 
     if (!selectedBarber) {

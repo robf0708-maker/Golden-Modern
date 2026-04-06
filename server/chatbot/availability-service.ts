@@ -416,6 +416,18 @@ export async function getAvailabilitySummaryForBarbers(params: {
   return { summaries, earliestBarber };
 }
 
+// Retorna o barbeiro com menos agendamentos hoje (mais slots disponíveis = menos ocupado)
+export function getLeastBusyBarber(summaries: BarberAvailabilitySummary[]): BarberAvailabilitySummary | null {
+  const available = summaries.filter(s => s.firstSlotTime !== null);
+  if (available.length === 0) return null;
+
+  return available.reduce((best, curr) => {
+    if (curr.slotsToday > best.slotsToday) return curr;
+    if (curr.slotsToday === best.slotsToday && (curr.firstSlotTime || '99:99') < (best.firstSlotTime || '99:99')) return curr;
+    return best;
+  });
+}
+
 export function isSlotValid(time: string, availableSlots: string[]): boolean {
   return availableSlots.includes(time);
 }

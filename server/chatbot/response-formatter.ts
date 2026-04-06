@@ -318,6 +318,21 @@ function buildDataBlock(data: ResponseData): string {
       }
       break;
 
+    case 'rescheduling_start':
+      lines.push('');
+      lines.push('TAREFA: Informe que o agendamento anterior foi cancelado e pergunte qual serviço o cliente deseja para o novo agendamento.');
+      if (data.cancelledDate && data.cancelledTime) {
+        lines.push(`AGENDAMENTO CANCELADO: ${data.cancelledDate} às ${data.cancelledTime}`);
+      }
+      if (data.services) {
+        lines.push('');
+        lines.push('SERVIÇOS DISPONÍVEIS (mencione de forma natural):');
+        for (const s of data.services) {
+          lines.push(`- ${s.name} (${s.duration}min)`);
+        }
+      }
+      break;
+
     case 'ask_companion_name':
       lines.push('');
       lines.push('TAREFA: Pergunte o nome da pessoa para quem o cliente quer agendar (acompanhante). Seja breve e simpático.');
@@ -435,6 +450,9 @@ function buildFallbackMessage(data: ResponseData): string {
         return `Você tem ${data.existingAppointments.length} agendamentos. Qual deseja cancelar?`;
       }
       return 'Qual agendamento deseja cancelar?';
+
+    case 'rescheduling_start':
+      return `Tudo certo, ${data.clientName}! Agendamento cancelado. Vamos marcar um novo horário. Qual serviço você deseja?`;
 
     case 'ask_companion_name':
       return `${data.clientName}, qual o nome da pessoa para quem você quer agendar?`;
