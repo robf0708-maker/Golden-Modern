@@ -338,31 +338,35 @@ export async function registerRoutes(
   });
 
   app.get("/api/barber/commissions", async (req, res) => {
-    if (!req.session?.barberId || !req.session?.isBarber) {
-      return res.status(401).json({ error: "Unauthorized" });
+    try {
+      if (!req.session?.barberId || !req.session?.isBarber) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+      const { startDate, endDate, paid } = req.query;
+      const start = startDate ? new Date(startDate as string) : undefined;
+      // Ajustar endDate para incluir todo o dia (23:59:59.999)
+      let end: Date | undefined;
+      if (endDate) {
+        end = new Date(endDate as string);
+        end.setHours(23, 59, 59, 999);
+      }
+
+      let commissions = await storage.getCommissionsWithDetails(
+        req.session.barbershopId!,
+        req.session.barberId,
+        start,
+        end
+      );
+
+      if (paid !== undefined) {
+        const isPaid = paid === 'true';
+        commissions = commissions.filter(c => c.paid === isPaid);
+      }
+
+      res.json(commissions);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
-    const { startDate, endDate, paid } = req.query;
-    const start = startDate ? new Date(startDate as string) : undefined;
-    // Ajustar endDate para incluir todo o dia (23:59:59.999)
-    let end: Date | undefined;
-    if (endDate) {
-      end = new Date(endDate as string);
-      end.setHours(23, 59, 59, 999);
-    }
-    
-    let commissions = await storage.getCommissionsWithDetails(
-      req.session.barbershopId!,
-      req.session.barberId,
-      start,
-      end
-    );
-    
-    if (paid !== undefined) {
-      const isPaid = paid === 'true';
-      commissions = commissions.filter(c => c.paid === isPaid);
-    }
-    
-    res.json(commissions);
   });
 
   app.get("/api/barber/purchases", async (req, res) => {
@@ -2705,8 +2709,12 @@ export async function registerRoutes(
   });
 
   app.get("/api/comandas/:id/items", requireAuth, async (req, res) => {
-    const items = await storage.getComandaItems(req.params.id);
-    res.json(items);
+    try {
+      const items = await storage.getComandaItems(req.params.id);
+      res.json(items);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.post("/api/comandas/:id/items", requireAuth, async (req, res) => {
@@ -2965,7 +2973,7 @@ export async function registerRoutes(
       const cashRegister = await storage.updateCashRegister(req.params.id, updateData);
 
       // Enviar aviso de fechamento de caixa para o admin via WhatsApp (se habilitado)
-      if (updateData.status === 'closed') {
+      if (updateData.status === 'closed' && cashRegister) {
         try {
           const notifSettings = await storage.getNotificationSettings(req.session.barbershopId!);
           if (notifSettings?.cashClosingEnabled) {
@@ -3095,27 +3103,35 @@ export async function registerRoutes(
   // ============ COMMISSIONS ============
   
   app.get("/api/commissions", requireAuth, async (req, res) => {
-    const { barberId, startDate, endDate } = req.query;
-    const start = startDate ? new Date(startDate as string) : undefined;
-    // Ajustar endDate para incluir todo o dia (23:59:59.999)
-    let end: Date | undefined;
-    if (endDate) {
-      end = new Date(endDate as string);
-      end.setHours(23, 59, 59, 999);
+    try {
+      const { barberId, startDate, endDate } = req.query;
+      const start = startDate ? new Date(startDate as string) : undefined;
+      // Ajustar endDate para incluir todo o dia (23:59:59.999)
+      let end: Date | undefined;
+      if (endDate) {
+        end = new Date(endDate as string);
+        end.setHours(23, 59, 59, 999);
+      }
+
+      const commissions = await storage.getCommissionsWithDetails(
+        req.session.barbershopId!,
+        barberId as string,
+        start,
+        end
+      );
+      res.json(commissions);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
-    
-    const commissions = await storage.getCommissionsWithDetails(
-      req.session.barbershopId!, 
-      barberId as string, 
-      start, 
-      end
-    );
-    res.json(commissions);
   });
 
   app.patch("/api/commissions/:id/pay", requireAuth, async (req, res) => {
-    await storage.markCommissionPaid(req.params.id);
-    res.json({ success: true });
+    try {
+      await storage.markCommissionPaid(req.params.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   // Fechamento de comissões em lote (com integração ao caixa)
