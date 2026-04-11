@@ -116,6 +116,7 @@ export default function PublicBooking() {
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [isAutoAssigning, setIsAutoAssigning] = useState(false);
   const [cameFromAutoAssign, setCameFromAutoAssign] = useState(false);
+  const [isPickSlotMode, setIsPickSlotMode] = useState(false);
 
   const { data: barbershop } = useQuery({
     queryKey: [`/public/${barbershopId}/info`],
@@ -157,6 +158,17 @@ export default function PublicBooking() {
       return res.json();
     },
     enabled: !!barbershopId && !!selectedBarber && step === 'datetime'
+  });
+
+  const { data: availableSlots } = useQuery<{ slots: string[] }>({
+    queryKey: [`/public/${barbershopId}/available-slots`, selectedService?.id, format(selectedDate, 'yyyy-MM-dd')],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/public/${barbershopId}/available-slots?serviceId=${selectedService?.id}&date=${format(selectedDate, 'yyyy-MM-dd')}`
+      );
+      return res.json();
+    },
+    enabled: !!barbershopId && !selectedBarber && isPickSlotMode && !!selectedService && step === 'datetime'
   });
 
   const getTimezoneOffset = () => {
@@ -374,31 +386,51 @@ export default function PublicBooking() {
 
   const isSlotAvailable = (time: string) => {
     const serviceDuration = getTotalDuration();
-    
+
     const [hours, mins] = time.split(':').map(Number);
     const slotStartMinutes = hours * 60 + mins;
     const slotEndMinutes = slotStartMinutes + serviceDuration;
-    
+
+    // Pick-slot mode: no barber selected, slots come from all-barbers availability endpoint
+    if (isPickSlotMode && !selectedBarber) {
+      const dateStr = format(selectedDate, 'yyyy-MM-dd');
+      const slotStart = new Date(`${dateStr}T${time.padStart(5, '0')}:00.000Z`);
+      const realNow = new Date();
+      const nowAsUTC = new Date(Date.UTC(
+        realNow.getFullYear(),
+        realNow.getMonth(),
+        realNow.getDate(),
+        realNow.getHours(),
+        realNow.getMinutes(),
+        realNow.getSeconds()
+      ));
+      const advanceHours = barbershop?.bookingAdvanceHours || 2;
+      const minBookingTime = new Date(nowAsUTC.getTime() + advanceHours * 60 * 60 * 1000);
+      if (isBefore(slotStart, minBookingTime)) return false;
+      if (!availableSlots?.slots) return true; // optimistic while loading
+      return availableSlots.slots.includes(time);
+    }
+
     const dayBreak = getBarberBreakForDay(selectedBarber, selectedDate);
     if (dayBreak) {
       const [lunchStartH, lunchStartM] = dayBreak.start.split(':').map(Number);
       const [lunchEndH, lunchEndM] = dayBreak.end.split(':').map(Number);
       const lunchStartMinutes = lunchStartH * 60 + lunchStartM;
       const lunchEndMinutes = lunchEndH * 60 + lunchEndM;
-      
+
       const noOverlap = slotEndMinutes <= lunchStartMinutes || slotStartMinutes >= lunchEndMinutes;
       if (!noOverlap) {
         return false;
       }
     }
-    
+
     if (!availability?.busySlots) return true;
-    
+
     // Create slot times in UTC to match backend storage
     const dateStr = format(selectedDate, 'yyyy-MM-dd');
     const slotStart = new Date(`${dateStr}T${time.padStart(5, '0')}:00.000Z`);
     const slotEnd = new Date(slotStart.getTime() + serviceDuration * 60000);
-    
+
     // Check advance hours requirement using UTC-as-local convention
     // Convert current local time to same UTC format for accurate comparison
     const realNow = new Date();
@@ -412,9 +444,9 @@ export default function PublicBooking() {
     ));
     const advanceHours = barbershop?.bookingAdvanceHours || 2;
     const minBookingTime = new Date(nowAsUTC.getTime() + advanceHours * 60 * 60 * 1000);
-    
+
     if (isBefore(slotStart, minBookingTime)) return false;
-    
+
     return !availability.busySlots.some(busy => {
       const busyStart = new Date(busy.startTime);
       const busyEnd = new Date(busy.endTime);
@@ -463,6 +495,7 @@ export default function PublicBooking() {
     setAdditionalServices([]);
     setSelectedTime(null);
     setCameFromAutoAssign(false);
+    setIsPickSlotMode(false);
     setStep('barber');
   };
 
@@ -505,6 +538,50 @@ export default function PublicBooking() {
       toast({
         title: "Erro",
         description: "Não foi possível buscar horário disponível.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsAutoAssigning(false);
+    }
+  };
+
+  const handleConfirmPickSlot = async () => {
+    if (!selectedService || !selectedTime) return;
+    setIsAutoAssigning(true);
+    try {
+      const serviceId = usePackageMode && selectedPackage
+        ? selectedPackage.serviceId
+        : selectedService.id;
+
+      const res = await fetch(
+        `/api/public/${barbershopId}/auto-assign-barber-for-slot?serviceId=${serviceId}&date=${format(selectedDate, 'yyyy-MM-dd')}&time=${selectedTime}`
+      );
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        toast({
+          title: "Horário indisponível",
+          description: data.error || "Nenhum profissional disponível neste horário. Escolha outro horário.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setSelectedBarber({
+        id: data.barberId,
+        name: data.barberName,
+        avatar: data.barberAvatar,
+        role: data.barberRole,
+        lunchStart: data.barberLunchStart,
+        lunchEnd: data.barberLunchEnd,
+        breakSchedule: data.barberBreakSchedule,
+      });
+      setCameFromAutoAssign(false);
+      setStep('confirm');
+    } catch {
+      toast({
+        title: "Erro",
+        description: "Não foi possível buscar profissional disponível.",
         variant: "destructive",
       });
     } finally {
@@ -996,8 +1073,24 @@ export default function PublicBooking() {
                   </>
                 )}
               </Button>
+              {!selectedBarber && (
+                <Button
+                  variant="outline"
+                  className="w-full mt-2 border-primary/30 hover:bg-primary/5"
+                  disabled={!selectedService || isAutoAssigning}
+                  onClick={() => {
+                    setIsPickSlotMode(true);
+                    setSelectedTime(null);
+                    setStep('datetime');
+                  }}
+                  data-testid="button-pick-slot"
+                >
+                  <CalendarDays className="h-4 w-4 mr-2" />
+                  Escolher dia e horário
+                </Button>
+              )}
               {selectedBarber && (
-                <Button 
+                <Button
                   className="w-full mt-2 bg-primary hover:bg-primary/90"
                   disabled={!selectedService}
                   onClick={() => setStep('datetime')}
@@ -1014,7 +1107,13 @@ export default function PublicBooking() {
           <Card className="border-primary/20 bg-card/80 backdrop-blur" data-testid="card-datetime-selection">
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
-                <Button variant="ghost" size="sm" onClick={() => setStep(usePackageMode ? 'barber' : 'service')}>
+                <Button variant="ghost" size="sm" onClick={() => {
+                  if (isPickSlotMode) {
+                    setIsPickSlotMode(false);
+                    setSelectedTime(null);
+                  }
+                  setStep(usePackageMode ? 'barber' : 'service');
+                }}>
                   <ChevronLeft className="h-4 w-4 mr-1" /> Voltar
                 </Button>
                 <Badge variant="outline" className="text-primary border-primary/30">
@@ -1104,13 +1203,26 @@ export default function PublicBooking() {
                 </div>
               </div>
 
-              <Button 
-                className="w-full bg-primary hover:bg-primary/90" 
-                disabled={!selectedTime}
-                onClick={() => setStep('confirm')}
+              <Button
+                className="w-full bg-primary hover:bg-primary/90"
+                disabled={!selectedTime || isAutoAssigning}
+                onClick={() => {
+                  if (isPickSlotMode && !selectedBarber) {
+                    handleConfirmPickSlot();
+                  } else {
+                    setStep('confirm');
+                  }
+                }}
                 data-testid="button-continue-confirm"
               >
-                Continuar
+                {isAutoAssigning ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Buscando profissional...
+                  </>
+                ) : (
+                  'Continuar'
+                )}
               </Button>
             </CardContent>
           </Card>

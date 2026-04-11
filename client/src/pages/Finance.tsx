@@ -186,6 +186,7 @@ export default function Finance() {
   const [editingExpense, setEditingExpense] = useState<any>(null);
   const [transactionType, setTransactionType] = useState<'withdrawal' | 'deposit' | 'refund'>('withdrawal');
   const [openAmount, setOpenAmount] = useState("");
+  const [closingAmountInput, setClosingAmountInput] = useState("");
   const [transactionAmount, setTransactionAmount] = useState("");
   const [transactionDescription, setTransactionDescription] = useState("");
   const [historyDateFilter, setHistoryDateFilter] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -308,18 +309,24 @@ export default function Finance() {
 
   const handleCloseCashRegister = async (force: boolean = false) => {
     if (!cashRegister) return;
-    
+
     try {
+      const countedAmount = closingAmountInput !== ""
+        ? parseFloat(closingAmountInput)
+        : expectedCashBalance;
+      const diff = countedAmount - expectedCashBalance;
+
       await closeMutation.mutateAsync({
         id: cashRegister.id,
-        closingAmount: expectedCashBalance.toFixed(2),
+        closingAmount: countedAmount.toFixed(2),
         expectedAmount: expectedCashBalance.toFixed(2),
-        difference: "0.00",
+        difference: diff.toFixed(2),
         status: 'closed',
         closedAt: new Date().toISOString(),
         forceClose: force
       });
       toast({ title: "Caixa fechado com sucesso!" });
+      setClosingAmountInput("");
       setIsCloseDialogOpen(false);
     } catch (error: any) {
       const errorMsg = error.message || "Erro ao fechar o caixa";
@@ -1557,9 +1564,29 @@ export default function Finance() {
                 </div>
                 <Separator />
                 <div className="flex justify-between text-lg font-bold">
-                  <span>Saldo Final (Dinheiro):</span>
+                  <span>Saldo Esperado (Dinheiro):</span>
                   <span className="text-primary">R$ {expectedCashBalance.toFixed(2)}</span>
                 </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Valor contado no caixa (opcional)</label>
+                <Input
+                  type="number"
+                  placeholder={`R$ ${expectedCashBalance.toFixed(2)}`}
+                  value={closingAmountInput}
+                  onChange={(e) => setClosingAmountInput(e.target.value)}
+                />
+                {closingAmountInput !== "" && !isNaN(parseFloat(closingAmountInput)) && (
+                  <p className={`text-sm font-bold ${
+                    parseFloat(closingAmountInput) - expectedCashBalance >= 0
+                      ? "text-green-500"
+                      : "text-red-500"
+                  }`}>
+                    Diferença: {parseFloat(closingAmountInput) - expectedCashBalance >= 0 ? "+" : ""}
+                    R$ {(parseFloat(closingAmountInput) - expectedCashBalance).toFixed(2)}
+                    {parseFloat(closingAmountInput) - expectedCashBalance > 0 ? " (sobra)" : parseFloat(closingAmountInput) - expectedCashBalance < 0 ? " (falta)" : " (exato)"}
+                  </p>
+                )}
               </div>
               {hasOpenComandas && (
                 <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20">

@@ -24,7 +24,7 @@ import {
 import { scheduleAppointmentNotifications, scheduleCancellationMessage, scheduleWelcomeMessage } from "./messaging";
 import { renderCampaignMessage } from './messaging/campaign-renderer';
 import { handleIncomingMessage } from "./chatbot";
-import { getAvailabilitySummaryForBarbers } from "./chatbot/availability-service";
+import { getAvailabilitySummaryForBarbers, checkBarberAvailabilityWithDuration } from "./chatbot/availability-service";
 import { getProvider } from "./messaging/provider-interface";
 import { sendPasswordResetEmail } from "./email";
 import { normalizePhone, isValidBrazilianPhone } from "./utils/phone";
@@ -2125,6 +2125,10 @@ export async function registerRoutes(
       }
       
       // FASE 2: Criar comanda e itens (validações já passaram)
+      // Gravar paidAt automaticamente quando comanda já é criada como fechada
+      if (data.status === 'closed') {
+        (data as any).paidAt = new Date();
+      }
       const comanda = await storage.createComanda(data);
       
       if (items && Array.isArray(items)) {
@@ -2546,8 +2550,10 @@ export async function registerRoutes(
       // Verificar se está fechando uma comanda que estava aberta
       const existingComanda = await storage.getComanda(req.params.id);
       const isClosing = existingComanda && existingComanda.status !== 'closed' && req.body.status === 'closed';
-      
-      const comanda = await storage.updateComanda(req.params.id, req.body);
+
+      // Gravar paidAt quando fechando uma comanda que estava aberta
+      const updateData = isClosing ? { ...req.body, paidAt: new Date() } : req.body;
+      const comanda = await storage.updateComanda(req.params.id, updateData);
       
       // Marcar agendamento como concluído e atualizar funil - quando comanda é fechada
       if (isClosing) {
@@ -3598,6 +3604,131 @@ export async function registerRoutes(
         barberBreakSchedule: barber.breakSchedule,
         firstSlotDate: best.firstSlotDate,
         firstSlotTime: best.firstSlotTime,
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Available slots across all eligible barbers for a given service + date (pick-slot mode)
+  app.get("/api/public/:barbershopId/available-slots", async (req, res) => {
+    try {
+      const { barbershopId } = req.params;
+      const { serviceId, date } = req.query as { serviceId?: string; date?: string };
+
+      if (!serviceId || !date) {
+        return res.status(400).json({ error: "serviceId e date são obrigatórios" });
+      }
+
+      const barbershop = await storage.getBarbershop(barbershopId);
+      if (!barbershop) {
+        return res.status(404).json({ error: "Barbearia não encontrada" });
+      }
+
+      const service = await storage.getService(serviceId);
+      if (!service) {
+        return res.status(404).json({ error: "Serviço não encontrado" });
+      }
+
+      const allBarbers = await storage.getBarbers(barbershopId);
+      const eligibleBarbersRaw = allBarbers.filter(b => b.active && (b as any).allowAutoAssign !== false);
+      const eligibleBarbers: typeof eligibleBarbersRaw = [];
+      for (const b of eligibleBarbersRaw) {
+        const bs = await storage.getBarberServices(b.id);
+        if (bs.length === 0 || bs.some(x => x.serviceId === serviceId)) {
+          eligibleBarbers.push(b);
+        }
+      }
+
+      if (eligibleBarbers.length === 0) {
+        return res.status(200).json({ slots: [] });
+      }
+
+      // Union of all slots available from any barber on this date
+      const slotSet = new Set<string>();
+      await Promise.all(
+        eligibleBarbers.map(async (barber) => {
+          const slots = await checkBarberAvailabilityWithDuration(barbershopId, barber.id, date, service.duration);
+          slots.forEach(s => slotSet.add(s));
+        })
+      );
+
+      const slots = Array.from(slotSet).sort();
+      res.json({ slots });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Auto-assign barber for a specific date + time slot (pick-slot mode)
+  app.get("/api/public/:barbershopId/auto-assign-barber-for-slot", async (req, res) => {
+    try {
+      const { barbershopId } = req.params;
+      const { serviceId, date, time } = req.query as { serviceId?: string; date?: string; time?: string };
+
+      if (!serviceId || !date || !time) {
+        return res.status(400).json({ error: "serviceId, date e time são obrigatórios" });
+      }
+
+      const barbershop = await storage.getBarbershop(barbershopId);
+      if (!barbershop) {
+        return res.status(404).json({ error: "Barbearia não encontrada" });
+      }
+
+      const service = await storage.getService(serviceId);
+      if (!service) {
+        return res.status(404).json({ error: "Serviço não encontrado" });
+      }
+
+      const allBarbers = await storage.getBarbers(barbershopId);
+      const eligibleBarbersRaw = allBarbers.filter(b => b.active && (b as any).allowAutoAssign !== false);
+      const eligibleBarbers: typeof eligibleBarbersRaw = [];
+      for (const b of eligibleBarbersRaw) {
+        const bs = await storage.getBarberServices(b.id);
+        if (bs.length === 0 || bs.some(x => x.serviceId === serviceId)) {
+          eligibleBarbers.push(b);
+        }
+      }
+
+      if (eligibleBarbers.length === 0) {
+        return res.status(200).json({ error: "Nenhum profissional disponível para agendamento automático" });
+      }
+
+      // Check which barbers are available at the requested date + time
+      const availabilityResults = await Promise.all(
+        eligibleBarbers.map(async (barber) => {
+          const slots = await checkBarberAvailabilityWithDuration(barbershopId, barber.id, date, service.duration);
+          return { barber, available: slots.includes(time) };
+        })
+      );
+
+      const availableBarbers = availabilityResults.filter(r => r.available).map(r => r.barber);
+
+      if (availableBarbers.length === 0) {
+        return res.status(200).json({ error: "Nenhum profissional disponível neste horário" });
+      }
+
+      // Sort by fewest upcoming appointments (least busy)
+      const now = new Date();
+      const farFuture = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+      const allAppts = await storage.getAppointments(barbershopId, now, farFuture);
+      availableBarbers.sort((a, b) => {
+        const countA = allAppts.filter(ap => ap.barberId === a.id && (ap.status === 'scheduled' || ap.status === 'confirmed')).length;
+        const countB = allAppts.filter(ap => ap.barberId === b.id && (ap.status === 'scheduled' || ap.status === 'confirmed')).length;
+        return countA - countB;
+      });
+
+      const barber = availableBarbers[0];
+      res.json({
+        barberId: barber.id,
+        barberName: barber.name,
+        barberAvatar: barber.avatar,
+        barberRole: barber.role,
+        barberLunchStart: barber.lunchStart,
+        barberLunchEnd: barber.lunchEnd,
+        barberBreakSchedule: barber.breakSchedule,
+        requestedDate: date,
+        requestedTime: time,
       });
     } catch (error: any) {
       res.status(400).json({ error: error.message });
