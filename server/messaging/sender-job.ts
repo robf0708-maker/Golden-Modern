@@ -181,14 +181,15 @@ export function startFunnelJob(): void {
     return;
   }
 
-  processFunnelJobs();
+  // Aguarda 30s antes de iniciar para não competir com o pool de conexões na subida do servidor
+  setTimeout(() => processFunnelJobs(), 30_000);
 
   const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
   funnelJobIntervalId = setInterval(async () => {
     await processFunnelJobs();
   }, TWENTY_FOUR_HOURS);
 
-  console.log('[FunnelJob] Job diário do funil iniciado (intervalo: 24h)');
+  console.log('[FunnelJob] Job diário do funil iniciado (intervalo: 24h, início em 30s)');
 }
 
 export function stopFunnelJob(): void {

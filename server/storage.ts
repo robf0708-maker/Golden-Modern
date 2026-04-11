@@ -187,6 +187,7 @@ export interface IStorage {
   
   // Appointment Services (multiple services per appointment)
   getAppointmentServices(appointmentId: string): Promise<AppointmentService[]>;
+  getAppointmentServicesBatch(appointmentIds: string[]): Promise<AppointmentService[]>;
   createAppointmentService(service: InsertAppointmentService): Promise<AppointmentService>;
   deleteAppointmentServices(appointmentId: string): Promise<void>;
   
@@ -1142,6 +1143,11 @@ export class DbStorage implements IStorage {
   // Appointment Services (multiple services per appointment)
   async getAppointmentServices(appointmentId: string): Promise<AppointmentService[]> {
     return db.select().from(schema.appointmentServices).where(eq(schema.appointmentServices.appointmentId, appointmentId));
+  }
+
+  async getAppointmentServicesBatch(appointmentIds: string[]): Promise<AppointmentService[]> {
+    if (appointmentIds.length === 0) return [];
+    return db.select().from(schema.appointmentServices).where(inArray(schema.appointmentServices.appointmentId, appointmentIds));
   }
 
   async createAppointmentService(service: InsertAppointmentService): Promise<AppointmentService> {

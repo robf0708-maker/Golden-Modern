@@ -1832,19 +1832,24 @@ export async function registerRoutes(
     const end = endDate ? new Date(endDate as string) : new Date();
     
     const appointments = await storage.getAppointments(req.session.barbershopId!, start, end);
-    
-    // Enrich appointments with additional services info
-    const enrichedAppointments = await Promise.all(appointments.map(async (apt) => {
-      const appointmentServices = await storage.getAppointmentServices(apt.id);
-      // Filter out the primary service to get only additional services
+
+    // Enrich appointments with additional services info — single batch query instead of N queries
+    const allAppointmentServices = await storage.getAppointmentServicesBatch(appointments.map(a => a.id));
+    const servicesByAppointment = new Map<string, typeof allAppointmentServices>();
+    for (const svc of allAppointmentServices) {
+      if (!servicesByAppointment.has(svc.appointmentId)) servicesByAppointment.set(svc.appointmentId, []);
+      servicesByAppointment.get(svc.appointmentId)!.push(svc);
+    }
+    const enrichedAppointments = appointments.map(apt => {
+      const appointmentServices = servicesByAppointment.get(apt.id) ?? [];
       const additionalServices = appointmentServices.filter(as => as.serviceId !== apt.serviceId);
       return {
         ...apt,
         additionalServicesCount: additionalServices.length,
         allServiceIds: appointmentServices.map(as => as.serviceId)
       };
-    }));
-    
+    });
+
     res.json(enrichedAppointments);
   });
 
