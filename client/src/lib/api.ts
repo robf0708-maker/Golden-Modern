@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DreReportPayload } from "@/types/dre";
 
 // API helper
-async function fetchAPI(endpoint: string, options?: RequestInit) {
+export async function fetchAPI(endpoint: string, options?: RequestInit) {
   const res = await fetch(`/api${endpoint}`, {
     ...options,
     headers: {
@@ -13,8 +13,9 @@ async function fetchAPI(endpoint: string, options?: RequestInit) {
   });
 
   if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || "API Error");
+    let message = res.statusText;
+    try { message = (await res.json()).error || message; } catch {}
+    throw new Error(message);
   }
 
   return res.json();
@@ -473,6 +474,9 @@ export function useComandas(status?: string) {
   return useQuery({
     queryKey: ["/comandas", status],
     queryFn: () => fetchAPI(`/comandas${status ? `?status=${status}` : ""}`),
+    refetchInterval: 30000,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
   });
 }
 
