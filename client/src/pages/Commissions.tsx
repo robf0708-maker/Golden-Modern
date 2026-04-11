@@ -33,7 +33,7 @@ import {
 import { format, startOfDay, endOfDay } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { toZonedTime, format as formatTz } from "date-fns-tz";
-import { useCommissions, usePayCommission, useBarbers, useBarberPurchases, useCloseCommissions, useCommissionPayments } from "@/lib/api";
+import { useCommissions, usePayCommission, useBarbers, useBarberPurchases, useCloseCommissions, useCommissionPayments, fetchAPI } from "@/lib/api";
 
 const BRAZIL_TIMEZONE = "America/Sao_Paulo";
 
@@ -201,17 +201,10 @@ export default function Commissions() {
       params.append("endDate", closeEndDate);
       params.append("barberId", closeBarber);
       
-      const [commissionsRes, purchasesRes] = await Promise.all([
-        fetch(`/api/commissions?${params.toString()}`),
-        fetch(`/api/barber-purchases?${params.toString()}`)
+      const [allCommissions, allPurchases] = await Promise.all([
+        fetchAPI(`/commissions?${params.toString()}`),
+        fetchAPI(`/barber-purchases?${params.toString()}`)
       ]);
-      
-      if (!commissionsRes.ok || !purchasesRes.ok) {
-        throw new Error("Erro ao buscar dados");
-      }
-      
-      const allCommissions = await commissionsRes.json();
-      const allPurchases = await purchasesRes.json();
       
       const feeDeductionsClose = allCommissions.filter((c: any) => 
         (c.type === 'fee_deduction' || c.originalType === 'fee_deduction') ||

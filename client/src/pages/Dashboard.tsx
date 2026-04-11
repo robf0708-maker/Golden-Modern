@@ -30,7 +30,7 @@ import {
 } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { useDashboardStats, useAuth, useFunnelStats, useRecalculateStats } from "@/lib/api";
+import { useDashboardStats, useAuth, useFunnelStats, useRecalculateStats, fetchAPI } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery } from "@tanstack/react-query";
 
@@ -55,12 +55,8 @@ export default function Dashboard() {
   };
 
   const { data: allSubscriptions = [], isError: subscriptionsError } = useQuery<any[]>({
-    queryKey: ["/api/subscriptions"],
-    queryFn: async () => {
-      const res = await fetch("/api/subscriptions");
-      if (!res.ok) throw new Error("Erro ao carregar assinaturas");
-      return res.json();
-    },
+    queryKey: ["/subscriptions"],
+    queryFn: () => fetchAPI("/subscriptions"),
   });
 
   const inadimplentSubscriptions = allSubscriptions.filter((s: any) => s.status === "past_due");

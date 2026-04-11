@@ -48,7 +48,8 @@ export const queryClient = new QueryClient({
       refetchInterval: false,
       refetchOnWindowFocus: false,
       staleTime: Infinity,
-      retry: false,
+      gcTime: 15 * 60 * 1000, // mantém cache por 15 min entre trocas de página
+      retry: 1, // tenta uma vez em caso de falha transitória de rede/servidor
     },
     mutations: {
       retry: false,
