@@ -219,7 +219,7 @@ export default function Finance() {
   
   const { toast } = useToast();
 
-  const { data: cashRegister, isLoading } = useCurrentCashRegister();
+  const { data: cashRegister, isLoading, isError: cashRegisterError } = useCurrentCashRegister();
   const { data: transactions = [] } = useCashTransactions(cashRegister?.id?.toString() || "");
   const { data: comandas = [] } = useComandas("closed");
   const { data: cashRegisterHistory = [] } = useCashRegisterHistory();
@@ -249,7 +249,9 @@ export default function Finance() {
 
   const sessionComandas = comandas.filter((c: any) => {
     if (!cashRegister) return false;
-    const comandaDate = new Date(c.createdAt);
+    // Usa paidAt (quando foi paga) se disponível, senão createdAt
+    // Garante que comandas criadas antes do caixa abrir mas pagas depois sejam contabilizadas
+    const comandaDate = new Date(c.paidAt || c.createdAt);
     const registerOpenDate = new Date(cashRegister.openedAt);
     return comandaDate >= registerOpenDate;
   });
@@ -303,7 +305,19 @@ export default function Finance() {
       setIsOpenDialogOpen(false);
       setOpenAmount("");
     } catch (error: any) {
-      toast({ title: "Erro", description: error.message, variant: "destructive" });
+      const msg = error.message || "";
+      if (msg.toLowerCase().includes("já existe") || msg.toLowerCase().includes("already")) {
+        toast({
+          title: "Caixa já está aberto",
+          description: "Já existe um caixa aberto no sistema. Recarregue a página para sincronizar.",
+          variant: "destructive"
+        });
+        setIsOpenDialogOpen(false);
+        // Forçar recarregamento dos dados do caixa
+        window.location.reload();
+      } else {
+        toast({ title: "Erro", description: msg, variant: "destructive" });
+      }
     }
   };
 
@@ -432,6 +446,23 @@ export default function Finance() {
       <Layout>
         <div className="flex items-center justify-center h-64">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+        </div>
+      </Layout>
+    );
+  }
+
+  if (cashRegisterError) {
+    return (
+      <Layout>
+        <div className="flex flex-col items-center justify-center h-64 gap-4">
+          <AlertCircle className="h-12 w-12 text-destructive" />
+          <p className="text-lg font-semibold text-foreground">Erro ao conectar com o servidor</p>
+          <p className="text-muted-foreground text-center max-w-sm">
+            Não foi possível carregar o status do caixa. Aguarde alguns segundos e recarregue a página.
+          </p>
+          <Button onClick={() => window.location.reload()} variant="outline">
+            Recarregar Página
+          </Button>
         </div>
       </Layout>
     );

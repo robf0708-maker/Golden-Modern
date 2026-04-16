@@ -611,6 +611,9 @@ export function useCurrentCashRegister() {
   return useQuery({
     queryKey: ["/cash-register/current"],
     queryFn: () => fetchAPI("/cash-register/current"),
+    retry: 1,
+    refetchOnWindowFocus: true,
+    refetchInterval: 60000,
   });
 }
 
