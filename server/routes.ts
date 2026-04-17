@@ -2100,469 +2100,66 @@ export async function registerRoutes(
     try {
       const { items, subtotal, discount, ...comandaBody } = req.body;
       const data = insertComandaSchema.parse({ ...comandaBody, barbershopId: req.session.barbershopId });
-      
+
       // FASE 0: Verificar se cliente já tem comanda aberta (não duplicar)
       if (data.clientId) {
         const existingOpenComanda = await storage.getOpenComandaByClient(req.session.barbershopId!, data.clientId);
         if (existingOpenComanda) {
-          return res.status(409).json({ 
+          return res.status(409).json({
             error: 'Cliente já possui uma comanda aberta',
             existingComandaId: existingOpenComanda.id
           });
         }
       }
-      
-      // FASE 1: Validar todos os package_use ANTES de criar qualquer coisa
+
+      // FASE 1: Validação otimista de saldo de pacotes (rejeição cedo com erro claro)
       if (items && Array.isArray(items)) {
         const packageUseItems = items.filter((i: any) => i.type === 'package_use' && i.clientPackageId);
         if (packageUseItems.length > 0) {
           const allClientPackages = await storage.getAllClientPackages(req.session.barbershopId!);
           const now = new Date();
-          
-          // Agrupar usos por clientPackageId para verificar total necessário
           const usageByPackage: Record<string, number> = {};
           for (const item of packageUseItems) {
             usageByPackage[item.clientPackageId] = (usageByPackage[item.clientPackageId] || 0) + item.quantity;
           }
-          
-          // Validar cada pacote antes de criar a comanda
           for (const [clientPackageId, neededQuantity] of Object.entries(usageByPackage)) {
             const cp = allClientPackages.find(p => p.id === clientPackageId);
-            
             if (!cp) {
               throw new Error(`Pacote do cliente não encontrado`);
             }
-            
             if (new Date(cp.expiresAt) < now) {
               throw new Error(`Pacote expirado`);
             }
-            
             if (cp.quantityRemaining < neededQuantity) {
               throw new Error(`Pacote não tem usos suficientes. Disponível: ${cp.quantityRemaining}, Solicitado: ${neededQuantity}`);
             }
           }
         }
       }
-      
-      // FASE 2: Criar comanda e itens (validações já passaram)
-      // Gravar paidAt automaticamente quando comanda já é criada como fechada
+
+      // FASE 2: criação atômica (comanda + itens + comissões + pacotes + assinaturas + estoque + fee_deductions)
       if (data.status === 'closed') {
         (data as any).paidAt = new Date();
       }
-      const comanda = await storage.createComanda(data);
-      
-      if (items && Array.isArray(items)) {
-        for (const item of items) {
-          // Calcular o total considerando desconto por item
-          // Backend recomputa discountAmount a partir de discountType e discountValue para garantir integridade
-          const itemGrossTotal = item.unitPrice * item.quantity;
-          let validatedDiscountType: string | null = null;
-          let validatedDiscountValue: string | null = null;
-          let validatedDiscountAmount: number = 0;
-          
-          if (item.discountType && item.discountValue) {
-            const discountValue = parseFloat(item.discountValue);
-            if (discountValue > 0) {
-              validatedDiscountType = item.discountType;
-              validatedDiscountValue = item.discountValue;
-              
-              if (item.discountType === 'percentage') {
-                // Limita a 100%
-                const clampedPercentage = Math.min(discountValue, 100);
-                validatedDiscountAmount = (itemGrossTotal * clampedPercentage) / 100;
-              } else {
-                // Valor fixo - limita ao valor do item
-                validatedDiscountAmount = Math.min(discountValue, itemGrossTotal);
-              }
-            }
-          }
-          
-          const itemTotal = (itemGrossTotal - validatedDiscountAmount).toString();
-          
-          const itemData: any = {
-            comandaId: comanda.id,
-            type: item.type,
-            quantity: item.quantity,
-            unitPrice: item.unitPrice.toString(),
-            total: itemTotal, // Total já com desconto aplicado
-            isBarberPurchase: item.isBarberPurchase || false,
-            originalPrice: item.originalPrice ? item.originalPrice.toString() : null, // Preço original para compras do barbeiro
-            // Campos de desconto por item - valores validados pelo backend
-            discountType: validatedDiscountType,
-            discountValue: validatedDiscountValue,
-            discountAmount: validatedDiscountAmount > 0 ? validatedDiscountAmount.toString() : null
-          };
-          
-          if (item.type === 'service' || item.type === 'package_use') {
-            itemData.serviceId = item.itemId;
-            if (item.type === 'package_use' && item.clientPackageId) {
-              itemData.clientPackageId = item.clientPackageId;
-            }
-          } else if (item.type === 'product') {
-            itemData.productId = item.itemId;
-          } else if (item.type === 'package' || item.type === 'subscription_sale') {
-            itemData.packageId = item.itemId;
-          }
-          
-          const createdItem = await storage.createComandaItem(itemData);
-          
-          // Criar comissão apenas se tem barbeiro, tem valor de comissão e NÃO é compra do barbeiro
-          // IMPORTANTE: NÃO gerar comissão para venda de pacote (package/subscription_sale) - comissão é apenas sobre USO de pacote (package_use)
-          if (item.barberId && item.commission > 0 && !item.isBarberPurchase && item.type !== 'package' && item.type !== 'subscription_sale') {
-            const finalItemTotal = parseFloat(itemTotal);
-            
-            // Para package_use, o valor do item na comanda é 0 (cliente não paga)
-            // mas a comissão é calculada sobre o valor proporcional do pacote (packageValue)
-            // Então NÃO devemos limitar a comissão ao finalItemTotal para package_use
-            let validatedCommission: number;
-            if (item.type === 'package_use') {
-              // Para package_use, usar comissão direta do frontend (baseada no packageValue)
-              validatedCommission = item.commission;
-            } else {
-              // Para outros itens, limitar ao valor do item
-              validatedCommission = Math.min(item.commission, finalItemTotal);
-            }
-            
-            await storage.createCommission({
-              barbershopId: req.session.barbershopId!,
-              barberId: item.barberId,
-              comandaItemId: createdItem.id,
-              amount: validatedCommission.toString(),
-              type: item.type,
-              paid: false
-            });
-          }
-          
-          // Criar DEDUÇÃO (comissão negativa) para compras do profissional
-          if (item.isBarberPurchase && item.barberId && item.originalPrice > 0) {
-            const deductionAmount = (parseFloat(item.originalPrice) * item.quantity).toString();
-            await storage.createCommission({
-              barbershopId: req.session.barbershopId!,
-              barberId: item.barberId,
-              comandaItemId: createdItem.id,
-              amount: `-${deductionAmount}`, // Valor negativo = dedução
-              type: 'deduction', // Tipo dedução para identificar
-              paid: false
-            });
-          }
+      const comanda = await storage.createComandaTransaction(
+        req.session.barbershopId!,
+        data,
+        Array.isArray(items) ? items : [],
+        { userId: req.session.userId, barberId: req.session.barberId }
+      );
 
-          if (item.type === 'package' && comandaBody.clientId) {
-            const packages = await storage.getPackages(req.session.barbershopId!);
-            const pkg = packages.find(p => p.id === item.itemId);
-            if (pkg) {
-              // Calcular valor líquido baseado no método de pagamento da comanda
-              const grossAmount = parseFloat(pkg.price);
-              let netAmount = grossAmount;
-              const paymentMethod = comandaBody.paymentMethod || 'cash';
-              
-              // Se pagamento for cartão, aplicar taxas da maquininha (não Stripe)
-              if (paymentMethod === 'card' || paymentMethod === 'credito') {
-                const barbershop = await storage.getBarbershop(req.session.barbershopId!);
-                const feePercent = parseFloat(barbershop?.feeCredit || '0');
-                netAmount = grossAmount - (grossAmount * feePercent / 100);
-              } else if (paymentMethod === 'debito') {
-                const barbershop = await storage.getBarbershop(req.session.barbershopId!);
-                const feePercent = parseFloat(barbershop?.feeDebit || '0');
-                netAmount = grossAmount - (grossAmount * feePercent / 100);
-              } else if (paymentMethod === 'pix') {
-                const barbershop = await storage.getBarbershop(req.session.barbershopId!);
-                const feePercent = parseFloat(barbershop?.feePix || '0');
-                netAmount = grossAmount - (grossAmount * feePercent / 100);
-              }
-              // Para cash, netAmount = grossAmount (sem taxas)
-              
-              for (let i = 0; i < item.quantity; i++) {
-                const expiresAt = new Date();
-                expiresAt.setDate(expiresAt.getDate() + pkg.validityDays);
-                
-                await storage.createClientPackage({
-                  clientId: comandaBody.clientId,
-                  packageId: pkg.id,
-                  quantityRemaining: pkg.quantity,
-                  quantityOriginal: pkg.quantity,
-                  expiresAt,
-                  netAmount: netAmount.toFixed(2),
-                  paymentMethod,
-                });
-              }
-            }
-          }
-          
-          // Descontar uso do pacote (já validado na fase 1) — decremento atômico evita saldo negativo em concorrência
-          if (item.type === 'package_use' && item.clientPackageId) {
-            const clientPackages = await storage.getAllClientPackages(req.session.barbershopId!);
-            const cp = clientPackages.find(p => p.id === item.clientPackageId);
-            if (cp) {
-              if (cp.subscriptionId) {
-                const subscription = await storage.getSubscription(cp.subscriptionId);
-                if (subscription && subscription.status !== 'active') {
-                  throw new Error(`Assinatura expirada para pacote ${item.clientPackageId} - renove para usar os créditos`);
-                }
-              }
-              const updated = await storage.decrementClientPackageAtomic(cp.id, item.quantity);
-              if (!updated) {
-                throw new Error(`Saldo insuficiente no pacote ${item.clientPackageId} — outra operação usou estes créditos primeiro. Atualize e tente novamente.`);
-              }
-            }
-          }
-          
-          // Processar venda de assinatura (subscription_sale) - SÓ quando comanda é FECHADA
-          if (item.type === 'subscription_sale' && comandaBody.clientId && comandaBody.status === 'closed') {
-            const packages = await storage.getPackages(req.session.barbershopId!);
-            const pkg = packages.find(p => p.id === item.itemId);
-            
-            if (pkg && pkg.isRecurring) {
-              const now = new Date();
-              const paymentMethod = comandaBody.paymentMethod || 'cash';
-              
-              // Calcular datas do período baseado no intervalo de recorrência
-              let periodEnd = new Date(now);
-              let nextBilling = new Date(now);
-              
-              if (pkg.recurringInterval === 'weekly') {
-                periodEnd.setDate(periodEnd.getDate() + 7);
-                nextBilling.setDate(nextBilling.getDate() + 7);
-              } else if (pkg.recurringInterval === 'biweekly') {
-                periodEnd.setDate(periodEnd.getDate() + 14);
-                nextBilling.setDate(nextBilling.getDate() + 14);
-              } else {
-                // monthly (padrão)
-                periodEnd.setMonth(periodEnd.getMonth() + 1);
-                nextBilling.setMonth(nextBilling.getMonth() + 1);
-              }
-              
-              // Calcular valor líquido baseado no método de pagamento
-              const grossAmount = parseFloat(pkg.price);
-              let netAmount = grossAmount;
-              const barbershop = await storage.getBarbershop(req.session.barbershopId!);
-              
-              if (paymentMethod === 'card' || paymentMethod === 'credito') {
-                const feePercent = parseFloat(barbershop?.feeCredit || '0');
-                netAmount = grossAmount - (grossAmount * feePercent / 100);
-              } else if (paymentMethod === 'debito') {
-                const feePercent = parseFloat(barbershop?.feeDebit || '0');
-                netAmount = grossAmount - (grossAmount * feePercent / 100);
-              } else if (paymentMethod === 'pix') {
-                const feePercent = parseFloat(barbershop?.feePix || '0');
-                netAmount = grossAmount - (grossAmount * feePercent / 100);
-              }
-              
-              // Criar o clientPackage com os créditos
-              const expiresAt = new Date(periodEnd);
-              expiresAt.setDate(expiresAt.getDate() + pkg.validityDays);
-              
-              const clientPackage = await storage.createClientPackage({
-                clientId: comandaBody.clientId,
-                packageId: pkg.id,
-                quantityRemaining: pkg.quantity,
-                quantityOriginal: pkg.quantity,
-                expiresAt,
-                netAmount: netAmount.toFixed(2),
-                paymentMethod,
-              });
-              
-              // Criar a assinatura ATIVA (já paga via comanda)
-              const subscription = await storage.createSubscription({
-                barbershopId: req.session.barbershopId!,
-                clientId: comandaBody.clientId,
-                packageId: pkg.id,
-                status: 'active', // Já ativa porque o pagamento foi confirmado na comanda
-                paymentMethod,
-                currentPeriodStart: now,
-                currentPeriodEnd: periodEnd,
-                nextBillingDate: nextBilling,
-                lastPaymentDate: now,
-                lastPaymentAmount: grossAmount.toString(),
-                clientPackageId: clientPackage.id,
-                notes: `Vendido pelo PDV - Comanda #${comanda.id.slice(-6)}`,
-              });
-              
-              // Vincular o clientPackage à assinatura
-              await storage.updateClientPackage(clientPackage.id, {
-                subscriptionId: subscription.id,
-              });
-              
-              // Atualizar o item da comanda com o ID da assinatura criada
-              await storage.updateComandaItem(createdItem.id, {
-                subscriptionId: subscription.id,
-              });
-              
-              // Obter caixa aberto para registrar o pagamento
-              const openCashRegister = await storage.getOpenCashRegister(req.session.barbershopId!);
-              
-              // Registrar pagamento da assinatura
-              await storage.createSubscriptionPayment({
-                subscriptionId: subscription.id,
-                comandaId: comanda.id,
-                amount: grossAmount.toString(),
-                paymentMethod,
-                status: 'paid',
-                paidAt: now,
-                periodStart: now,
-                periodEnd: periodEnd,
-                receivedByUserId: req.session.userId || null,
-                receivedByBarberId: req.session.barberId || null,
-                cashRegisterId: openCashRegister?.id || null,
-                notes: `Primeiro pagamento via PDV`,
-              });
-            }
-          }
-        }
-      }
-      
-      // Se a comanda está fechada e tem um agendamento vinculado, marcar como concluído
-      if (comandaBody.status === 'closed' && comandaBody.appointmentId) {
-        // Verificar se o agendamento pertence ao mesmo barbershop antes de atualizar
-        const appointment = await storage.getAppointment(comandaBody.appointmentId);
-        if (appointment && appointment.barbershopId === req.session.barbershopId) {
-          await storage.updateAppointment(comandaBody.appointmentId, { status: 'completed' });
-        }
-      }
-
-      // Atualizar funil do cliente após fechar comanda (POST - comanda criada já fechada)
-      if (comandaBody.status === 'closed' && comandaBody.clientId) {
+      // FASE 3: funil — FORA da transação, tolerante a erro
+      if (comanda.status === 'closed' && comanda.clientId) {
         try {
-          await storage.updateClientFunnelData(comandaBody.clientId, req.session.barbershopId!);
-          console.log(`[Funil] Dados do cliente ${comandaBody.clientId} atualizados após fechamento de comanda`);
+          await storage.updateClientFunnelData(comanda.clientId, req.session.barbershopId!);
+          console.log(`[Funil] Dados do cliente ${comanda.clientId} atualizados após fechamento de comanda`);
         } catch (funnelError) {
           console.error('[Funil] Erro ao atualizar dados do cliente:', funnelError);
         }
       }
-      
-      // Baixa de estoque para produtos - apenas quando comanda é fechada
-      if (comandaBody.status === 'closed' && items && Array.isArray(items)) {
-        for (const item of items) {
-          if (item.type === 'product' && item.itemId) {
-            const product = await storage.getProduct(item.itemId);
-            if (product) {
-              const newStock = Math.max(0, product.stock - (item.quantity || 1));
-              await storage.updateProduct(item.itemId, { stock: newStock });
-            }
-          }
-        }
-      }
-      
-      // Registrar taxa de pagamento no caixa (cartão/PIX)
-      if (comandaBody.status === 'closed' && comandaBody.paymentMethod) {
-        const barbershop = await storage.getBarbershop(req.session.barbershopId!);
-        let openCashRegister = await storage.getOpenCashRegister(req.session.barbershopId!);
-        
-        // Se houver caixa aberto no momento do fechamento
-        if (barbershop && openCashRegister) {
-          let feePercentage = 0;
-          let feeLabel = '';
-          
-          // Mapear métodos de pagamento do frontend para taxas
-          // Frontend usa: cash, pix, card (pagamento único)
-          if (comandaBody.paymentMethod === 'card' || comandaBody.paymentMethod === 'credito') {
-            feePercentage = parseFloat(barbershop.feeCredit || '0');
-            feeLabel = 'Cartão';
-          } else if (comandaBody.paymentMethod === 'debito') {
-            feePercentage = parseFloat(barbershop.feeDebit || '0');
-            feeLabel = 'Cartão Débito';
-          } else if (comandaBody.paymentMethod === 'pix') {
-            feePercentage = parseFloat(barbershop.feePix || '0');
-            feeLabel = 'PIX';
-          } else if (comandaBody.paymentMethod === 'split' && comandaBody.paymentDetails) {
-            // Para pagamento dividido, calcular taxa de cada método
-            // Frontend usa paymentDetails.split com métodos: cash, pix, card
-            const splitPayments = comandaBody.paymentDetails.split || [];
-            for (const payment of splitPayments) {
-              let splitFee = 0;
-              let splitLabel = '';
-              
-              // Mapear métodos do frontend para taxas
-              if (payment.method === 'card') {
-                // Card = crédito (assumindo crédito como padrão para cartão)
-                splitFee = parseFloat(barbershop.feeCredit || '0');
-                splitLabel = 'Cartão';
-              } else if (payment.method === 'pix') {
-                splitFee = parseFloat(barbershop.feePix || '0');
-                splitLabel = 'PIX';
-              }
-              // cash não tem taxa
-              
-            }
-            
-            // Para split, calcular taxa total ponderada e deduzir das comissões
-            const comandaTotal = parseFloat(comandaBody.total || '0');
-            let totalFeeAmount = 0;
-            for (const payment of splitPayments) {
-              let splitFee = 0;
-              if (payment.method === 'card') {
-                splitFee = parseFloat(barbershop.feeCredit || '0');
-              } else if (payment.method === 'pix') {
-                splitFee = parseFloat(barbershop.feePix || '0');
-              }
-              if (splitFee > 0 && payment.amount > 0) {
-                totalFeeAmount += (payment.amount * splitFee) / 100;
-              }
-            }
-            
-            // Deduzir taxa proporcional das comissões (split)
-            // IMPORTANTE: Não criar fee_deduction para package_use - taxa já foi descontada na compra do pacote
-            if (totalFeeAmount > 0 && comandaTotal > 0) {
-              const effectiveFeePercentage = (totalFeeAmount / comandaTotal) * 100;
-              const comandaCommissions = await storage.getCommissionsByComanda(comanda.id);
-              // Filtrar: apenas comissões positivas E que NÃO são package_use (pacote já teve taxa descontada na compra)
-              const positiveCommissions = comandaCommissions.filter(c => 
-                parseFloat(c.amount) > 0 && c.type !== 'package_use'
-              );
-              
-              for (const commission of positiveCommissions) {
-                const commissionAmount = parseFloat(commission.amount);
-                const feeDeduction = (commissionAmount * effectiveFeePercentage) / 100;
-                
-                if (feeDeduction > 0) {
-                  await storage.createCommission({
-                    barbershopId: req.session.barbershopId!,
-                    barberId: commission.barberId,
-                    comandaItemId: commission.comandaItemId,
-                    amount: `-${feeDeduction.toFixed(2)}`,
-                    type: 'fee_deduction',
-                    paid: false
-                  });
-                }
-              }
-            }
-          }
-          
-          // Deduzir taxas das comissões dos barbeiros (comissão sobre valor líquido)
-          // NOTA: Taxas NÃO são registradas no caixa do operador - são invisíveis para ele
-          // Taxas aparecem apenas no DRE (relatório financeiro do dono)
-          if (feePercentage > 0 && comandaBody.paymentMethod !== 'split') {
-            const comandaTotal = parseFloat(comandaBody.total || '0');
-            const feeAmount = (comandaTotal * feePercentage) / 100;
-            
-            if (feeAmount > 0) {
-              // IMPORTANTE: Não criar fee_deduction para package_use - taxa já foi descontada na compra do pacote
-              const comandaCommissions = await storage.getCommissionsByComanda(comanda.id);
-              // Filtrar: apenas comissões positivas E que NÃO são package_use
-              const positiveCommissions = comandaCommissions.filter(c => 
-                parseFloat(c.amount) > 0 && c.type !== 'package_use'
-              );
-              
-              for (const commission of positiveCommissions) {
-                const commissionAmount = parseFloat(commission.amount);
-                const feeDeduction = (commissionAmount * feePercentage) / 100;
-                
-                if (feeDeduction > 0) {
-                  await storage.createCommission({
-                    barbershopId: req.session.barbershopId!,
-                    barberId: commission.barberId,
-                    comandaItemId: commission.comandaItemId,
-                    amount: `-${feeDeduction.toFixed(2)}`,
-                    type: 'fee_deduction',
-                    paid: false
-                  });
-                }
-              }
-            }
-          }
-        }
-      }
-      
-      res.json(comanda);
+
+      return res.json(comanda);
+
     } catch (error: any) {
       res.status(400).json({ error: error.message });
     }

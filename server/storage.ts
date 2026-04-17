@@ -305,6 +305,12 @@ export interface IStorage {
   deleteSubscriptionPaymentsBySubscription(subscriptionId: string): Promise<void>;
   refundComandaTransaction(comandaId: string, comanda: Comanda, items: ComandaItem[], commissions: Commission[], barbershopId: string): Promise<void>;
   closeComandaTransaction(comandaId: string, barbershopId: string, updateData: Partial<InsertComanda>): Promise<Comanda>;
+  createComandaTransaction(
+    barbershopId: string,
+    comandaData: InsertComanda,
+    items: Array<Record<string, any>>,
+    session: { userId?: string | null; barberId?: string | null }
+  ): Promise<Comanda>;
 
   // Refund Notifications
   getRefundNotifications(barbershopId: string, barberId: string): Promise<RefundNotification[]>;
@@ -2215,6 +2221,392 @@ export class DbStorage implements IStorage {
                     paid: false,
                   });
                 }
+              }
+            }
+          }
+        }
+      }
+
+      return comanda;
+    });
+  }
+
+  // Cria uma comanda atomicamente com todos os seus efeitos (itens, comissões, pacotes,
+  // assinaturas, estoque, deduções de taxa). Se qualquer passo falhar, nada é gravado.
+  // Preserva o comportamento atual do POST /api/comandas — apenas envolve em transação.
+  // A atualização do funil do cliente fica FORA desta função (tolerante a erro).
+  async createComandaTransaction(
+    barbershopId: string,
+    comandaData: InsertComanda,
+    items: Array<Record<string, any>>,
+    session: { userId?: string | null; barberId?: string | null }
+  ): Promise<Comanda> {
+    return db.transaction(async (tx) => {
+      // Leituras de contexto carregadas uma única vez
+      const [barbershop] = await tx.select().from(schema.barbershops)
+        .where(eq(schema.barbershops.id, barbershopId));
+      const [openCashRegister] = await tx.select().from(schema.cashRegister)
+        .where(and(
+          eq(schema.cashRegister.barbershopId, barbershopId),
+          eq(schema.cashRegister.status, 'open')
+        ))
+        .limit(1);
+
+      // 1. Criar comanda
+      const [comanda] = await tx.insert(schema.comandas).values(comandaData).returning();
+      if (!comanda) {
+        throw new Error('Falha ao criar comanda');
+      }
+
+      // 2. Criar itens + comissões + efeitos por tipo
+      for (const item of items) {
+        // Validação de desconto: backend recomputa discountAmount a partir de discountType/discountValue
+        const itemGrossTotal = item.unitPrice * item.quantity;
+        let validatedDiscountType: string | null = null;
+        let validatedDiscountValue: string | null = null;
+        let validatedDiscountAmount = 0;
+
+        if (item.discountType && item.discountValue) {
+          const discountValue = parseFloat(item.discountValue);
+          if (discountValue > 0) {
+            validatedDiscountType = item.discountType;
+            validatedDiscountValue = item.discountValue;
+            if (item.discountType === 'percentage') {
+              const clampedPercentage = Math.min(discountValue, 100);
+              validatedDiscountAmount = (itemGrossTotal * clampedPercentage) / 100;
+            } else {
+              validatedDiscountAmount = Math.min(discountValue, itemGrossTotal);
+            }
+          }
+        }
+
+        const itemTotal = (itemGrossTotal - validatedDiscountAmount).toString();
+
+        const itemData: any = {
+          comandaId: comanda.id,
+          type: item.type,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice.toString(),
+          total: itemTotal,
+          isBarberPurchase: item.isBarberPurchase || false,
+          originalPrice: item.originalPrice ? item.originalPrice.toString() : null,
+          discountType: validatedDiscountType,
+          discountValue: validatedDiscountValue,
+          discountAmount: validatedDiscountAmount > 0 ? validatedDiscountAmount.toString() : null,
+        };
+
+        if (item.type === 'service' || item.type === 'package_use') {
+          itemData.serviceId = item.itemId;
+          if (item.type === 'package_use' && item.clientPackageId) {
+            itemData.clientPackageId = item.clientPackageId;
+          }
+        } else if (item.type === 'product') {
+          itemData.productId = item.itemId;
+        } else if (item.type === 'package' || item.type === 'subscription_sale') {
+          itemData.packageId = item.itemId;
+        }
+
+        const [createdItem] = await tx.insert(schema.comandaItems).values(itemData).returning();
+
+        // Comissão positiva (só para itens com barbeiro, não para venda de pacote/assinatura)
+        if (item.barberId && item.commission > 0 && !item.isBarberPurchase && item.type !== 'package' && item.type !== 'subscription_sale') {
+          const finalItemTotal = parseFloat(itemTotal);
+          let validatedCommission: number;
+          if (item.type === 'package_use') {
+            validatedCommission = item.commission;
+          } else {
+            validatedCommission = Math.min(item.commission, finalItemTotal);
+          }
+          await tx.insert(schema.commissions).values({
+            barbershopId,
+            barberId: item.barberId,
+            comandaItemId: createdItem.id,
+            amount: validatedCommission.toString(),
+            type: item.type,
+            paid: false,
+          });
+        }
+
+        // Dedução negativa para compras do próprio barbeiro
+        if (item.isBarberPurchase && item.barberId && item.originalPrice > 0) {
+          const deductionAmount = (parseFloat(item.originalPrice) * item.quantity).toString();
+          await tx.insert(schema.commissions).values({
+            barbershopId,
+            barberId: item.barberId,
+            comandaItemId: createdItem.id,
+            amount: `-${deductionAmount}`,
+            type: 'deduction',
+            paid: false,
+          });
+        }
+
+        // Venda de pacote: cria N clientPackages com créditos líquidos
+        if (item.type === 'package' && comandaData.clientId) {
+          const [pkg] = await tx.select().from(schema.packages)
+            .where(and(
+              eq(schema.packages.barbershopId, barbershopId),
+              eq(schema.packages.id, item.itemId)
+            ));
+          if (pkg) {
+            const grossAmount = parseFloat(pkg.price);
+            let netAmount = grossAmount;
+            const paymentMethod = comandaData.paymentMethod || 'cash';
+
+            if (paymentMethod === 'card' || paymentMethod === 'credito') {
+              const feePercent = parseFloat(barbershop?.feeCredit || '0');
+              netAmount = grossAmount - (grossAmount * feePercent / 100);
+            } else if (paymentMethod === 'debito') {
+              const feePercent = parseFloat(barbershop?.feeDebit || '0');
+              netAmount = grossAmount - (grossAmount * feePercent / 100);
+            } else if (paymentMethod === 'pix') {
+              const feePercent = parseFloat(barbershop?.feePix || '0');
+              netAmount = grossAmount - (grossAmount * feePercent / 100);
+            }
+
+            for (let i = 0; i < item.quantity; i++) {
+              const expiresAt = new Date();
+              expiresAt.setDate(expiresAt.getDate() + pkg.validityDays);
+              await tx.insert(schema.clientPackages).values({
+                clientId: comandaData.clientId,
+                packageId: pkg.id,
+                quantityRemaining: pkg.quantity,
+                quantityOriginal: pkg.quantity,
+                expiresAt,
+                netAmount: netAmount.toFixed(2),
+                paymentMethod,
+              } as any);
+            }
+          }
+        }
+
+        // Uso de pacote: decremento atômico dentro da transação
+        if (item.type === 'package_use' && item.clientPackageId) {
+          const [cp] = await tx.select().from(schema.clientPackages)
+            .where(eq(schema.clientPackages.id, item.clientPackageId));
+          if (cp) {
+            if (cp.subscriptionId) {
+              const [subscription] = await tx.select().from(schema.subscriptions)
+                .where(eq(schema.subscriptions.id, cp.subscriptionId));
+              if (subscription && subscription.status !== 'active') {
+                throw new Error(`Assinatura expirada para pacote ${item.clientPackageId} - renove para usar os créditos`);
+              }
+            }
+            const [updated] = await tx.update(schema.clientPackages)
+              .set({
+                quantityRemaining: sql`${schema.clientPackages.quantityRemaining} - ${item.quantity}`,
+              })
+              .where(and(
+                eq(schema.clientPackages.id, cp.id),
+                gte(schema.clientPackages.quantityRemaining, item.quantity),
+              ))
+              .returning();
+            if (!updated) {
+              throw new Error(`Saldo insuficiente no pacote ${item.clientPackageId} — outra operação usou estes créditos primeiro. Atualize e tente novamente.`);
+            }
+          }
+        }
+
+        // Venda de assinatura: só quando comanda é criada fechada
+        if (item.type === 'subscription_sale' && comandaData.clientId && comandaData.status === 'closed') {
+          const [pkg] = await tx.select().from(schema.packages)
+            .where(and(
+              eq(schema.packages.barbershopId, barbershopId),
+              eq(schema.packages.id, item.itemId)
+            ));
+          if (pkg && pkg.isRecurring) {
+            const now = new Date();
+            const paymentMethod = comandaData.paymentMethod || 'cash';
+
+            const periodEnd = new Date(now);
+            const nextBilling = new Date(now);
+            if (pkg.recurringInterval === 'weekly') {
+              periodEnd.setDate(periodEnd.getDate() + 7);
+              nextBilling.setDate(nextBilling.getDate() + 7);
+            } else if (pkg.recurringInterval === 'biweekly') {
+              periodEnd.setDate(periodEnd.getDate() + 14);
+              nextBilling.setDate(nextBilling.getDate() + 14);
+            } else {
+              periodEnd.setMonth(periodEnd.getMonth() + 1);
+              nextBilling.setMonth(nextBilling.getMonth() + 1);
+            }
+
+            const grossAmount = parseFloat(pkg.price);
+            let netAmount = grossAmount;
+            if (paymentMethod === 'card' || paymentMethod === 'credito') {
+              const feePercent = parseFloat(barbershop?.feeCredit || '0');
+              netAmount = grossAmount - (grossAmount * feePercent / 100);
+            } else if (paymentMethod === 'debito') {
+              const feePercent = parseFloat(barbershop?.feeDebit || '0');
+              netAmount = grossAmount - (grossAmount * feePercent / 100);
+            } else if (paymentMethod === 'pix') {
+              const feePercent = parseFloat(barbershop?.feePix || '0');
+              netAmount = grossAmount - (grossAmount * feePercent / 100);
+            }
+
+            const expiresAt = new Date(periodEnd);
+            expiresAt.setDate(expiresAt.getDate() + pkg.validityDays);
+
+            const [clientPackage] = await tx.insert(schema.clientPackages).values({
+              clientId: comandaData.clientId,
+              packageId: pkg.id,
+              quantityRemaining: pkg.quantity,
+              quantityOriginal: pkg.quantity,
+              expiresAt,
+              netAmount: netAmount.toFixed(2),
+              paymentMethod,
+            } as any).returning();
+
+            const [subscription] = await tx.insert(schema.subscriptions).values({
+              barbershopId,
+              clientId: comandaData.clientId,
+              packageId: pkg.id,
+              status: 'active',
+              paymentMethod,
+              currentPeriodStart: now,
+              currentPeriodEnd: periodEnd,
+              nextBillingDate: nextBilling,
+              lastPaymentDate: now,
+              lastPaymentAmount: grossAmount.toString(),
+              clientPackageId: clientPackage.id,
+              notes: `Vendido pelo PDV - Comanda #${comanda.id.slice(-6)}`,
+            } as any).returning();
+
+            await tx.update(schema.clientPackages)
+              .set({ subscriptionId: subscription.id })
+              .where(eq(schema.clientPackages.id, clientPackage.id));
+
+            await tx.update(schema.comandaItems)
+              .set({ subscriptionId: subscription.id })
+              .where(eq(schema.comandaItems.id, createdItem.id));
+
+            await tx.insert(schema.subscriptionPayments).values({
+              subscriptionId: subscription.id,
+              comandaId: comanda.id,
+              amount: grossAmount.toString(),
+              paymentMethod,
+              status: 'paid',
+              paidAt: now,
+              periodStart: now,
+              periodEnd,
+              receivedByUserId: session.userId || null,
+              receivedByBarberId: session.barberId || null,
+              cashRegisterId: openCashRegister?.id || null,
+              notes: `Primeiro pagamento via PDV`,
+            } as any);
+          }
+        }
+      }
+
+      // 3. Marcar agendamento como concluído (se comanda já foi criada fechada)
+      if (comandaData.status === 'closed' && comandaData.appointmentId) {
+        const [appointment] = await tx.select().from(schema.appointments)
+          .where(eq(schema.appointments.id, comandaData.appointmentId));
+        if (appointment && appointment.barbershopId === barbershopId) {
+          await tx.update(schema.appointments)
+            .set({ status: 'completed' })
+            .where(eq(schema.appointments.id, comandaData.appointmentId));
+        }
+      }
+
+      // 4. Baixa de estoque (só se fechada)
+      if (comandaData.status === 'closed') {
+        for (const item of items) {
+          if (item.type === 'product' && item.itemId) {
+            const [product] = await tx.select().from(schema.products)
+              .where(eq(schema.products.id, item.itemId));
+            if (product) {
+              const newStock = Math.max(0, product.stock - (item.quantity || 1));
+              await tx.update(schema.products)
+                .set({ stock: newStock })
+                .where(eq(schema.products.id, item.itemId));
+            }
+          }
+        }
+      }
+
+      // 5. Fee deductions (só se fechada + paymentMethod + caixa aberto)
+      if (comandaData.status === 'closed' && comandaData.paymentMethod && barbershop && openCashRegister) {
+        let feePercentage = 0;
+        const paymentMethod = comandaData.paymentMethod;
+
+        if (paymentMethod === 'card' || paymentMethod === 'credito') {
+          feePercentage = parseFloat(barbershop.feeCredit || '0');
+        } else if (paymentMethod === 'debito') {
+          feePercentage = parseFloat(barbershop.feeDebit || '0');
+        } else if (paymentMethod === 'pix') {
+          feePercentage = parseFloat(barbershop.feePix || '0');
+        } else if (paymentMethod === 'split' && comandaData.paymentDetails) {
+          const paymentDetails = comandaData.paymentDetails as any;
+          const splitPayments = paymentDetails.split || [];
+          const comandaTotal = parseFloat(comandaData.total || '0');
+          let totalFeeAmount = 0;
+          for (const payment of splitPayments) {
+            let splitFee = 0;
+            if (payment.method === 'card') {
+              splitFee = parseFloat(barbershop.feeCredit || '0');
+            } else if (payment.method === 'pix') {
+              splitFee = parseFloat(barbershop.feePix || '0');
+            }
+            if (splitFee > 0 && payment.amount > 0) {
+              totalFeeAmount += (payment.amount * splitFee) / 100;
+            }
+          }
+
+          if (totalFeeAmount > 0 && comandaTotal > 0) {
+            const effectiveFeePercentage = (totalFeeAmount / comandaTotal) * 100;
+            const allItems = await tx.select().from(schema.comandaItems)
+              .where(eq(schema.comandaItems.comandaId, comanda.id));
+            const itemIds = allItems.map(i => i.id);
+            const comandaCommissions = itemIds.length > 0
+              ? await tx.select().from(schema.commissions)
+                  .where(inArray(schema.commissions.comandaItemId, itemIds))
+              : [];
+            const positiveCommissions = comandaCommissions.filter(c =>
+              parseFloat(c.amount) > 0 && c.type !== 'package_use'
+            );
+            for (const commission of positiveCommissions) {
+              const commissionAmount = parseFloat(commission.amount);
+              const feeDeduction = (commissionAmount * effectiveFeePercentage) / 100;
+              if (feeDeduction > 0) {
+                await tx.insert(schema.commissions).values({
+                  barbershopId,
+                  barberId: commission.barberId,
+                  comandaItemId: commission.comandaItemId,
+                  amount: `-${feeDeduction.toFixed(2)}`,
+                  type: 'fee_deduction',
+                  paid: false,
+                });
+              }
+            }
+          }
+        }
+
+        if (feePercentage > 0 && paymentMethod !== 'split') {
+          const comandaTotal = parseFloat(comandaData.total || '0');
+          const feeAmount = (comandaTotal * feePercentage) / 100;
+          if (feeAmount > 0) {
+            const allItems = await tx.select().from(schema.comandaItems)
+              .where(eq(schema.comandaItems.comandaId, comanda.id));
+            const itemIds = allItems.map(i => i.id);
+            const comandaCommissions = itemIds.length > 0
+              ? await tx.select().from(schema.commissions)
+                  .where(inArray(schema.commissions.comandaItemId, itemIds))
+              : [];
+            const positiveCommissions = comandaCommissions.filter(c =>
+              parseFloat(c.amount) > 0 && c.type !== 'package_use'
+            );
+            for (const commission of positiveCommissions) {
+              const commissionAmount = parseFloat(commission.amount);
+              const feeDeduction = (commissionAmount * feePercentage) / 100;
+              if (feeDeduction > 0) {
+                await tx.insert(schema.commissions).values({
+                  barbershopId,
+                  barberId: commission.barberId,
+                  comandaItemId: commission.comandaItemId,
+                  amount: `-${feeDeduction.toFixed(2)}`,
+                  type: 'fee_deduction',
+                  paid: false,
+                });
               }
             }
           }
