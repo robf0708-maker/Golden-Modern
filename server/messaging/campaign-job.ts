@@ -1,6 +1,8 @@
 import { storage } from '../storage';
 import { getProvider } from './provider-interface';
 
+const CAMPAIGN_LOCK_KEY = 42002;
+
 let isRunning = false;
 let shouldStop = false;
 let intervalId: NodeJS.Timeout | null = null;
@@ -24,90 +26,96 @@ export async function processCampaigns(): Promise<void> {
   shouldStop = false;
 
   try {
-    const campaigns = await storage.getCampaignsSending();
-    if (campaigns.length === 0) return;
+    const lockResult = await storage.withAdvisoryLock(CAMPAIGN_LOCK_KEY, async () => {
+      const campaigns = await storage.getCampaignsSending();
+      if (campaigns.length === 0) return;
 
-    // Processa uma campanha por vez
-    const campaign = campaigns[0];
-    console.log(`[CampaignJob] Processando campanha ${campaign.id}`);
+      // Processa uma campanha por vez
+      const campaign = campaigns[0];
+      console.log(`[CampaignJob] Processando campanha ${campaign.id}`);
 
-    // Verificar se WhatsApp está conectado para esta barbearia
-    const chatbotSettings = await storage.getChatbotSettings(campaign.barbershopId);
-    if (!chatbotSettings?.whatsappConnected) {
-      console.log(`[CampaignJob] WhatsApp desconectado para barbearia ${campaign.barbershopId}`);
-      return;
-    }
-
-    const provider = getProvider('uazapi');
-    const delayMin = (campaign.delayMinSeconds ?? 15) * 1000;
-    const delayMax = (campaign.delayMaxSeconds ?? 45) * 1000;
-    let variationIndex = campaign.sentCount + campaign.failedCount;
-
-    while (!shouldStop) {
-      // Verificar limite diário antes de cada envio
-      const sentToday = await storage.getCampaignSentTodayCount(campaign.barbershopId);
-      if (sentToday >= (campaign.dailyLimit ?? 100)) {
-        console.log(`[CampaignJob] Limite diário atingido para barbearia ${campaign.barbershopId}`);
-        // Mantém campanha como 'sending' — vai continuar amanhã
-        break;
+      // Verificar se WhatsApp está conectado para esta barbearia
+      const chatbotSettings = await storage.getChatbotSettings(campaign.barbershopId);
+      if (!chatbotSettings?.whatsappConnected) {
+        console.log(`[CampaignJob] WhatsApp desconectado para barbearia ${campaign.barbershopId}`);
+        return;
       }
 
-      // Pegar próximo destinatário pendente
-      const recipient = await storage.getPendingCampaignRecipient(campaign.id);
-      if (!recipient) {
-        // Todos enviados — marcar como concluída
-        await storage.updateCampaign(campaign.id, {
-          status: 'done',
-          completedAt: new Date(),
-        } as any);
-        console.log(`[CampaignJob] Campanha ${campaign.id} concluída`);
-        break;
-      }
+      const provider = getProvider('uazapi');
+      const delayMin = (campaign.delayMinSeconds ?? 15) * 1000;
+      const delayMax = (campaign.delayMaxSeconds ?? 45) * 1000;
+      let variationIndex = campaign.sentCount + campaign.failedCount;
 
-      // Adicionar variação invisível para evitar detecção de mensagem idêntica
-      const messageToSend = addVariation(recipient.renderedMessage, variationIndex);
+      while (!shouldStop) {
+        // Verificar limite diário antes de cada envio
+        const sentToday = await storage.getCampaignSentTodayCount(campaign.barbershopId);
+        if (sentToday >= (campaign.dailyLimit ?? 100)) {
+          console.log(`[CampaignJob] Limite diário atingido para barbearia ${campaign.barbershopId}`);
+          // Mantém campanha como 'sending' — vai continuar amanhã
+          break;
+        }
 
-      try {
-        const result = await provider.send(
-          { to: recipient.phone, message: messageToSend },
-          chatbotSettings.uazapiInstanceToken ?? undefined
-        );
+        // Pegar próximo destinatário pendente
+        const recipient = await storage.getPendingCampaignRecipient(campaign.id);
+        if (!recipient) {
+          // Todos enviados — marcar como concluída
+          await storage.updateCampaign(campaign.id, {
+            status: 'done',
+            completedAt: new Date(),
+          } as any);
+          console.log(`[CampaignJob] Campanha ${campaign.id} concluída`);
+          break;
+        }
 
-        if (result.success) {
-          await storage.updateCampaignRecipient(recipient.id, {
-            status: 'sent',
-            sentAt: new Date(),
-          });
-          await storage.incrementCampaignSentCount(campaign.id);
-          console.log(`[CampaignJob] Enviado para ${recipient.phone}`);
-        } else {
+        // Adicionar variação invisível para evitar detecção de mensagem idêntica
+        const messageToSend = addVariation(recipient.renderedMessage, variationIndex);
+
+        try {
+          const result = await provider.send(
+            { to: recipient.phone, message: messageToSend },
+            chatbotSettings.uazapiInstanceToken ?? undefined
+          );
+
+          if (result.success) {
+            await storage.updateCampaignRecipient(recipient.id, {
+              status: 'sent',
+              sentAt: new Date(),
+            });
+            await storage.incrementCampaignSentCount(campaign.id);
+            console.log(`[CampaignJob] Enviado para ${recipient.phone}`);
+          } else {
+            await storage.updateCampaignRecipient(recipient.id, {
+              status: 'failed',
+              error: result.error,
+            });
+            await storage.incrementCampaignFailedCount(campaign.id);
+            console.warn(`[CampaignJob] Falha ao enviar para ${recipient.phone}: ${result.error}`);
+          }
+        } catch (err: any) {
           await storage.updateCampaignRecipient(recipient.id, {
             status: 'failed',
-            error: result.error,
+            error: err.message,
           });
           await storage.incrementCampaignFailedCount(campaign.id);
-          console.warn(`[CampaignJob] Falha ao enviar para ${recipient.phone}: ${result.error}`);
+          console.error(`[CampaignJob] Erro ao enviar para ${recipient.phone}:`, err);
         }
-      } catch (err: any) {
-        await storage.updateCampaignRecipient(recipient.id, {
-          status: 'failed',
-          error: err.message,
-        });
-        await storage.incrementCampaignFailedCount(campaign.id);
-        console.error(`[CampaignJob] Erro ao enviar para ${recipient.phone}:`, err);
+
+        variationIndex++;
+
+        // Delay aleatório anti-spam entre cada mensagem
+        await randomDelay(delayMin, delayMax);
+
+        // Re-checar se campanha foi parada externamente pelo admin
+        const refreshed = await storage.getCampaign(campaign.id);
+        if (refreshed?.status === 'stopped') {
+          console.log(`[CampaignJob] Campanha ${campaign.id} parada pelo admin`);
+          shouldStop = true;
+        }
       }
+    });
 
-      variationIndex++;
-
-      // Delay aleatório anti-spam entre cada mensagem
-      await randomDelay(delayMin, delayMax);
-
-      // Re-checar se campanha foi parada externamente pelo admin
-      const refreshed = await storage.getCampaign(campaign.id);
-      if (refreshed?.status === 'stopped') {
-        console.log(`[CampaignJob] Campanha ${campaign.id} parada pelo admin`);
-        shouldStop = true;
-      }
+    if (lockResult === null) {
+      console.log('[CampaignJob] Outra instância já está processando campanhas — lock ocupado, pulando ciclo');
     }
   } catch (error) {
     console.error('[CampaignJob] Erro inesperado:', error);

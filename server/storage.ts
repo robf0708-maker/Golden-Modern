@@ -177,7 +177,11 @@ export interface IStorage {
   createClientPackage(clientPackage: InsertClientPackage): Promise<ClientPackage>;
   updateClientPackage(id: string, data: Partial<InsertClientPackage>): Promise<ClientPackage | undefined>;
   updateClientPackageQuantity(id: string, quantity: number): Promise<void>;
-  
+  decrementClientPackageAtomic(id: string, quantity: number): Promise<ClientPackage | null>;
+
+  // Advisory Lock (PostgreSQL) — trava global para jobs de background
+  withAdvisoryLock<T>(lockKey: number, fn: () => Promise<T>): Promise<T | null>;
+
   // Appointments
   getAppointments(barbershopId: string, startDate: Date, endDate: Date): Promise<Appointment[]>;
   getAppointment(id: string): Promise<Appointment | undefined>;
@@ -300,6 +304,7 @@ export interface IStorage {
   deleteClientPackage(id: string): Promise<void>;
   deleteSubscriptionPaymentsBySubscription(subscriptionId: string): Promise<void>;
   refundComandaTransaction(comandaId: string, comanda: Comanda, items: ComandaItem[], commissions: Commission[], barbershopId: string): Promise<void>;
+  closeComandaTransaction(comandaId: string, barbershopId: string, updateData: Partial<InsertComanda>): Promise<Comanda>;
 
   // Refund Notifications
   getRefundNotifications(barbershopId: string, barberId: string): Promise<RefundNotification[]>;
@@ -1110,6 +1115,21 @@ export class DbStorage implements IStorage {
 
   async updateClientPackageQuantity(id: string, quantity: number): Promise<void> {
     await db.update(schema.clientPackages).set({ quantityRemaining: quantity }).where(eq(schema.clientPackages.id, id));
+  }
+
+  // Decremento atômico de créditos: só efetiva se o saldo atual for suficiente.
+  // Retorna o pacote atualizado, ou null quando a operação foi abortada (saldo insuficiente / concorrência).
+  async decrementClientPackageAtomic(id: string, quantity: number): Promise<ClientPackage | null> {
+    const result = await db.update(schema.clientPackages)
+      .set({
+        quantityRemaining: sql`${schema.clientPackages.quantityRemaining} - ${quantity}`,
+      })
+      .where(and(
+        eq(schema.clientPackages.id, id),
+        gte(schema.clientPackages.quantityRemaining, quantity),
+      ))
+      .returning();
+    return result[0] ?? null;
   }
 
   // Appointments
@@ -2054,6 +2074,157 @@ export class DbStorage implements IStorage {
     });
   }
 
+  // Fecha uma comanda atomicamente: atualiza status, marca agendamento como concluído,
+  // baixa estoque dos produtos vendidos e gera as deduções de taxa de cartão/PIX nas comissões.
+  // Preserva o comportamento atual: se não houver caixa aberto, deduções não são criadas.
+  // updateClientFunnelData fica FORA desta função (é tolerante a erro e roda por último).
+  async closeComandaTransaction(
+    comandaId: string,
+    barbershopId: string,
+    updateData: Partial<InsertComanda>
+  ): Promise<Comanda> {
+    return db.transaction(async (tx) => {
+      // 1. Atualiza a comanda
+      const [comanda] = await tx.update(schema.comandas)
+        .set(updateData)
+        .where(eq(schema.comandas.id, comandaId))
+        .returning();
+
+      if (!comanda) {
+        throw new Error(`Comanda ${comandaId} não encontrada para fechamento`);
+      }
+
+      // 2. Marca agendamento como concluído (se houver)
+      if (comanda.appointmentId) {
+        const [appt] = await tx.select().from(schema.appointments)
+          .where(eq(schema.appointments.id, comanda.appointmentId));
+        if (appt && appt.barbershopId === barbershopId) {
+          await tx.update(schema.appointments)
+            .set({ status: 'completed' })
+            .where(eq(schema.appointments.id, comanda.appointmentId));
+        }
+      }
+
+      // 3. Baixa de estoque para produtos vendidos
+      const items = await tx.select().from(schema.comandaItems)
+        .where(eq(schema.comandaItems.comandaId, comandaId));
+      for (const item of items) {
+        if (item.productId) {
+          const [product] = await tx.select().from(schema.products)
+            .where(eq(schema.products.id, item.productId));
+          if (product) {
+            const newStock = Math.max(0, product.stock - (item.quantity || 1));
+            await tx.update(schema.products)
+              .set({ stock: newStock })
+              .where(eq(schema.products.id, item.productId));
+          }
+        }
+      }
+
+      // 4. Deduções de taxa de pagamento (fee_deduction) — apenas se houver paymentMethod + caixa aberto
+      if (comanda.paymentMethod) {
+        const [barbershop] = await tx.select().from(schema.barbershops)
+          .where(eq(schema.barbershops.id, barbershopId));
+        const [openCashRegister] = await tx.select().from(schema.cashRegister)
+          .where(and(
+            eq(schema.cashRegister.barbershopId, barbershopId),
+            eq(schema.cashRegister.status, 'open')
+          ))
+          .limit(1);
+
+        if (barbershop && openCashRegister) {
+          let feePercentage = 0;
+
+          if (comanda.paymentMethod === 'card' || comanda.paymentMethod === 'credito') {
+            feePercentage = parseFloat(barbershop.feeCredit || '0');
+          } else if (comanda.paymentMethod === 'debito') {
+            feePercentage = parseFloat(barbershop.feeDebit || '0');
+          } else if (comanda.paymentMethod === 'pix') {
+            feePercentage = parseFloat(barbershop.feePix || '0');
+          } else if (comanda.paymentMethod === 'split' && comanda.paymentDetails) {
+            const paymentDetails = comanda.paymentDetails as any;
+            const splitPayments = paymentDetails.split || [];
+            const comandaTotal = parseFloat(comanda.total || '0');
+            let totalFeeAmount = 0;
+            for (const payment of splitPayments) {
+              let splitFee = 0;
+              if (payment.method === 'card') {
+                splitFee = parseFloat(barbershop.feeCredit || '0');
+              } else if (payment.method === 'pix') {
+                splitFee = parseFloat(barbershop.feePix || '0');
+              }
+              if (splitFee > 0 && payment.amount > 0) {
+                totalFeeAmount += (payment.amount * splitFee) / 100;
+              }
+            }
+
+            if (totalFeeAmount > 0 && comandaTotal > 0) {
+              const effectiveFeePercentage = (totalFeeAmount / comandaTotal) * 100;
+              const itemIdsForCommissions = items.map(i => i.id);
+              const comandaCommissions = itemIdsForCommissions.length > 0
+                ? await tx.select().from(schema.commissions)
+                    .where(inArray(schema.commissions.comandaItemId, itemIdsForCommissions))
+                : [];
+              const positiveCommissions = comandaCommissions.filter(c =>
+                parseFloat(c.amount) > 0 && c.type !== 'package_use'
+              );
+
+              for (const commission of positiveCommissions) {
+                const commissionAmount = parseFloat(commission.amount);
+                const feeDeduction = (commissionAmount * effectiveFeePercentage) / 100;
+
+                if (feeDeduction > 0) {
+                  await tx.insert(schema.commissions).values({
+                    barbershopId,
+                    barberId: commission.barberId,
+                    comandaItemId: commission.comandaItemId,
+                    amount: `-${feeDeduction.toFixed(2)}`,
+                    type: 'fee_deduction',
+                    paid: false,
+                  });
+                }
+              }
+            }
+          }
+
+          if (feePercentage > 0 && comanda.paymentMethod !== 'split') {
+            const comandaTotal = parseFloat(comanda.total || '0');
+            const feeAmount = (comandaTotal * feePercentage) / 100;
+
+            if (feeAmount > 0) {
+              const itemIdsForCommissions = items.map(i => i.id);
+              const comandaCommissions = itemIdsForCommissions.length > 0
+                ? await tx.select().from(schema.commissions)
+                    .where(inArray(schema.commissions.comandaItemId, itemIdsForCommissions))
+                : [];
+              const positiveCommissions = comandaCommissions.filter(c =>
+                parseFloat(c.amount) > 0 && c.type !== 'package_use'
+              );
+
+              for (const commission of positiveCommissions) {
+                const commissionAmount = parseFloat(commission.amount);
+                const feeDeduction = (commissionAmount * feePercentage) / 100;
+
+                if (feeDeduction > 0) {
+                  await tx.insert(schema.commissions).values({
+                    barbershopId,
+                    barberId: commission.barberId,
+                    comandaItemId: commission.comandaItemId,
+                    amount: `-${feeDeduction.toFixed(2)}`,
+                    type: 'fee_deduction',
+                    paid: false,
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      return comanda;
+    });
+  }
+
   // ============ CAMPAIGNS ============
 
   async getCampaigns(barbershopId: string): Promise<Campaign[]> {
@@ -2177,6 +2348,51 @@ export class DbStorage implements IStorage {
     }
 
     return [];
+  }
+
+  // ============ STRIPE WEBHOOK IDEMPOTENCY ============
+
+  // Retorna true se o evento é novo (deve ser processado). Retorna false se já foi processado antes.
+  // Em caso de erro de infraestrutura (tabela ausente, etc), retorna true (fail-open) para não bloquear o webhook.
+  async tryRecordStripeEvent(eventId: string, eventType: string): Promise<boolean> {
+    try {
+      const inserted = await db.insert(schema.stripeEventsProcessed)
+        .values({ id: eventId, eventType })
+        .onConflictDoNothing()
+        .returning();
+      return inserted.length > 0;
+    } catch (err) {
+      console.error('[Stripe Idempotency] Falha ao registrar evento, processando sem proteção:', err);
+      return true;
+    }
+  }
+
+  // ============ ADVISORY LOCK (jobs de background) ============
+
+  // Tenta adquirir um lock global no Postgres (pg_try_advisory_lock). Se conseguir, executa `fn`
+  // e libera o lock ao final. Se o lock já estiver em uso por outra instância/processo, retorna
+  // null sem executar — o próximo ciclo do job tentará de novo.
+  async withAdvisoryLock<T>(lockKey: number, fn: () => Promise<T>): Promise<T | null> {
+    const client = await pool.connect();
+    try {
+      const { rows } = await client.query(
+        'SELECT pg_try_advisory_lock($1)::boolean AS acquired',
+        [lockKey]
+      );
+      const acquired = rows[0]?.acquired === true;
+      if (!acquired) return null;
+      try {
+        return await fn();
+      } finally {
+        try {
+          await client.query('SELECT pg_advisory_unlock($1)', [lockKey]);
+        } catch (unlockErr) {
+          console.error('[AdvisoryLock] Falha ao liberar lock (será liberado ao fechar conexão):', unlockErr);
+        }
+      }
+    } finally {
+      client.release();
+    }
   }
 }
 

@@ -621,3 +621,13 @@ export const barberServices = pgTable("barber_services", {
 export const insertBarberServiceSchema = createInsertSchema(barberServices).omit({ id: true });
 export type InsertBarberService = z.infer<typeof insertBarberServiceSchema>;
 export type BarberService = typeof barberServices.$inferSelect;
+
+// Controle de idempotência de webhooks Stripe: evita processar o mesmo event.id duas vezes.
+export const stripeEventsProcessed = pgTable("stripe_events_processed", {
+  id: text("id").primaryKey(),
+  eventType: text("event_type").notNull(),
+  processedAt: timestamp("processed_at").defaultNow().notNull(),
+});
+
+export type StripeEventProcessed = typeof stripeEventsProcessed.$inferSelect;
+export type InsertStripeEventProcessed = typeof stripeEventsProcessed.$inferInsert;

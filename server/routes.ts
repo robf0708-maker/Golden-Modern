@@ -1406,12 +1406,14 @@ export async function registerRoutes(
           subscriptionId: subscription.id,
           packageId: subscription.packageId,
           clientId: subscription.clientId,
+          barbershopId: subscription.barbershopId,
         },
         subscription_data: {
           metadata: {
             subscriptionId: subscription.id,
             packageId: subscription.packageId,
             clientId: subscription.clientId,
+            barbershopId: subscription.barbershopId,
           },
         },
       });
@@ -1576,8 +1578,15 @@ export async function registerRoutes(
         console.log("[Stripe Webhook] Warning: No STRIPE_WEBHOOK_SECRET set, skipping signature verification");
       }
       
-      console.log(`[Stripe Webhook] Received event: ${event.type}`);
-      
+      console.log(`[Stripe Webhook] Received event: ${event.type} (${event.id})`);
+
+      // Idempotência: não reprocessar o mesmo evento se o Stripe reenviar
+      const isNewEvent = await storage.tryRecordStripeEvent(event.id, event.type);
+      if (!isNewEvent) {
+        console.log(`[Stripe Webhook] Event ${event.id} já processado — ignorando duplicata`);
+        return res.json({ received: true, duplicate: true });
+      }
+
       switch (event.type) {
         case 'checkout.session.completed': {
           const session = event.data.object;
@@ -1589,11 +1598,17 @@ export async function registerRoutes(
             if (subscriptionId) {
               const subscription = await storage.getSubscription(subscriptionId);
               if (subscription) {
+                // Proteção multi-tenant: se o metadata inclui barbershopId, precisa bater com a subscription no banco
+                const metadataBarbershopId = session.metadata?.barbershopId;
+                if (metadataBarbershopId && subscription.barbershopId !== metadataBarbershopId) {
+                  console.error(`[Stripe Webhook] Barbershop mismatch — metadata: ${metadataBarbershopId}, subscription: ${subscription.barbershopId}. Evento rejeitado.`);
+                  return res.json({ received: true, rejected: 'barbershop_mismatch' });
+                }
                 const pkg = await storage.getPackage(subscription.packageId);
                 if (pkg) {
                   const now = new Date();
                   const periodEnd = new Date(now);
-                  
+
                   switch (pkg.recurringInterval) {
                     case "weekly":
                       periodEnd.setDate(periodEnd.getDate() + 7);
@@ -1606,10 +1621,10 @@ export async function registerRoutes(
                       periodEnd.setMonth(periodEnd.getMonth() + 1);
                       break;
                   }
-                  
+
                   const expiresAt = new Date(periodEnd);
                   expiresAt.setDate(expiresAt.getDate() + pkg.validityDays);
-                  
+
                   // Calculate net amount after Stripe fees
                   const barbershop = await storage.getBarbershop(subscription.barbershopId);
                   const grossAmount = parseFloat(pkg.price);
@@ -2273,7 +2288,7 @@ export async function registerRoutes(
             }
           }
           
-          // Descontar uso do pacote (já validado na fase 1)
+          // Descontar uso do pacote (já validado na fase 1) — decremento atômico evita saldo negativo em concorrência
           if (item.type === 'package_use' && item.clientPackageId) {
             const clientPackages = await storage.getAllClientPackages(req.session.barbershopId!);
             const cp = clientPackages.find(p => p.id === item.clientPackageId);
@@ -2284,7 +2299,10 @@ export async function registerRoutes(
                   throw new Error(`Assinatura expirada para pacote ${item.clientPackageId} - renove para usar os créditos`);
                 }
               }
-              await storage.updateClientPackageQuantity(cp.id, cp.quantityRemaining - item.quantity);
+              const updated = await storage.decrementClientPackageAtomic(cp.id, item.quantity);
+              if (!updated) {
+                throw new Error(`Saldo insuficiente no pacote ${item.clientPackageId} — outra operação usou estes créditos primeiro. Atualize e tente novamente.`);
+              }
             }
           }
           
@@ -2554,21 +2572,22 @@ export async function registerRoutes(
     try {
       // Verificar se está fechando uma comanda que estava aberta
       const existingComanda = await storage.getComanda(req.params.id);
-      const isClosing = existingComanda && existingComanda.status !== 'closed' && req.body.status === 'closed';
+      if (!existingComanda || existingComanda.barbershopId !== req.session.barbershopId) {
+        return res.status(404).json({ error: "Comanda não encontrada" });
+      }
+      const isClosing = existingComanda.status !== 'closed' && req.body.status === 'closed';
 
-      // Gravar paidAt quando fechando uma comanda que estava aberta
-      const updateData = isClosing ? { ...req.body, paidAt: new Date() } : req.body;
-      const comanda = await storage.updateComanda(req.params.id, updateData);
-      
-      // Marcar agendamento como concluído e atualizar funil - quando comanda é fechada
+      // Caminho 1: FECHAMENTO — tudo em uma transação atômica
       if (isClosing) {
-        if (comanda?.appointmentId) {
-          const appt = await storage.getAppointment(comanda.appointmentId);
-          if (appt && appt.barbershopId === req.session.barbershopId) {
-            await storage.updateAppointment(comanda.appointmentId, { status: 'completed' });
-          }
-        }
-        if (comanda?.clientId) {
+        const updateData = { ...req.body, paidAt: new Date() };
+        const comanda = await storage.closeComandaTransaction(
+          req.params.id,
+          req.session.barbershopId!,
+          updateData
+        );
+
+        // Atualização do funil fica FORA da transação (é tolerante a erro e não deve travar o fechamento)
+        if (comanda.clientId) {
           try {
             await storage.updateClientFunnelData(comanda.clientId, req.session.barbershopId!);
             console.log(`[Funil] Dados do cliente ${comanda.clientId} atualizados após fechamento de comanda`);
@@ -2576,143 +2595,12 @@ export async function registerRoutes(
             console.error('[Funil] Erro ao atualizar dados do cliente:', funnelError);
           }
         }
+
+        return res.json(comanda);
       }
 
-      // Baixa de estoque para produtos - apenas quando comanda é fechada
-      if (isClosing) {
-        const items = await storage.getComandaItems(req.params.id);
-        for (const item of items) {
-          if (item.productId) {
-            const product = await storage.getProduct(item.productId);
-            if (product) {
-              const newStock = Math.max(0, product.stock - (item.quantity || 1));
-              await storage.updateProduct(item.productId, { stock: newStock });
-            }
-          }
-        }
-        
-      // Registrar taxa de pagamento no caixa (cartão/PIX) ao fechar comanda
-      if (comanda && comanda.paymentMethod) {
-        const barbershop = await storage.getBarbershop(req.session.barbershopId!);
-        let openCashRegister = await storage.getOpenCashRegister(req.session.barbershopId!);
-        
-        // Se for split ou tiver método de pagamento, e houver caixa aberto
-        if (barbershop && openCashRegister) {
-            let feePercentage = 0;
-            let feeLabel = '';
-            
-            // Mapear métodos de pagamento do frontend para taxas
-            // Frontend usa: cash, pix, card (pagamento único)
-            if (comanda.paymentMethod === 'card' || comanda.paymentMethod === 'credito') {
-              feePercentage = parseFloat(barbershop.feeCredit || '0');
-              feeLabel = 'Cartão';
-            } else if (comanda.paymentMethod === 'debito') {
-              feePercentage = parseFloat(barbershop.feeDebit || '0');
-              feeLabel = 'Cartão Débito';
-            } else if (comanda.paymentMethod === 'pix') {
-              feePercentage = parseFloat(barbershop.feePix || '0');
-              feeLabel = 'PIX';
-            } else if (comanda.paymentMethod === 'split' && comanda.paymentDetails) {
-              // Para pagamento dividido, calcular taxa de cada método
-              // Frontend usa paymentDetails.split com métodos: cash, pix, card
-              const paymentDetails = comanda.paymentDetails as any;
-              const splitPayments = paymentDetails.split || [];
-              for (const payment of splitPayments) {
-                let splitFee = 0;
-                let splitLabel = '';
-                
-                // Mapear métodos do frontend para taxas
-                if (payment.method === 'card') {
-                  splitFee = parseFloat(barbershop.feeCredit || '0');
-                  splitLabel = 'Cartão';
-                } else if (payment.method === 'pix') {
-                  splitFee = parseFloat(barbershop.feePix || '0');
-                  splitLabel = 'PIX';
-                }
-                // cash não tem taxa
-                
-              }
-              
-              // Para split, calcular taxa total e deduzir das comissões (PATCH)
-              // NOTA: Taxas NÃO são registradas no caixa do operador - são invisíveis para ele
-              const comandaTotal = parseFloat(comanda.total || '0');
-              let totalFeeAmount = 0;
-              for (const payment of splitPayments) {
-                let splitFee = 0;
-                if (payment.method === 'card') {
-                  splitFee = parseFloat(barbershop.feeCredit || '0');
-                } else if (payment.method === 'pix') {
-                  splitFee = parseFloat(barbershop.feePix || '0');
-                }
-                if (splitFee > 0 && payment.amount > 0) {
-                  totalFeeAmount += (payment.amount * splitFee) / 100;
-                }
-              }
-              
-              // Deduzir taxa proporcional das comissões (split)
-              // IMPORTANTE: Não criar fee_deduction para package_use - taxa já foi descontada na compra do pacote
-              if (totalFeeAmount > 0 && comandaTotal > 0) {
-                const effectiveFeePercentage = (totalFeeAmount / comandaTotal) * 100;
-                const comandaCommissions = await storage.getCommissionsByComanda(comanda.id);
-                // Filtrar: apenas comissões positivas E que NÃO são package_use
-                const positiveCommissions = comandaCommissions.filter(c => 
-                  parseFloat(c.amount) > 0 && c.type !== 'package_use'
-                );
-                
-                for (const commission of positiveCommissions) {
-                  const commissionAmount = parseFloat(commission.amount);
-                  const feeDeduction = (commissionAmount * effectiveFeePercentage) / 100;
-                  
-                  if (feeDeduction > 0) {
-                    await storage.createCommission({
-                      barbershopId: req.session.barbershopId!,
-                      barberId: commission.barberId,
-                      comandaItemId: commission.comandaItemId,
-                      amount: `-${feeDeduction.toFixed(2)}`,
-                      type: 'fee_deduction',
-                      paid: false
-                    });
-                  }
-                }
-              }
-            }
-            
-            // Deduzir taxas das comissões dos barbeiros (comissão sobre valor líquido)
-            // NOTA: Taxas NÃO são registradas no caixa do operador - são invisíveis para ele
-            // Taxas aparecem apenas no DRE (relatório financeiro do dono)
-            if (feePercentage > 0 && comanda.paymentMethod !== 'split') {
-              const comandaTotal = parseFloat(comanda.total || '0');
-              const feeAmount = (comandaTotal * feePercentage) / 100;
-              
-              if (feeAmount > 0) {
-                // IMPORTANTE: Não criar fee_deduction para package_use - taxa já foi descontada na compra do pacote
-                const comandaCommissions = await storage.getCommissionsByComanda(comanda.id);
-                // Filtrar: apenas comissões positivas E que NÃO são package_use
-                const positiveCommissions = comandaCommissions.filter(c => 
-                  parseFloat(c.amount) > 0 && c.type !== 'package_use'
-                );
-                
-                for (const commission of positiveCommissions) {
-                  const commissionAmount = parseFloat(commission.amount);
-                  const feeDeduction = (commissionAmount * feePercentage) / 100;
-                  
-                  if (feeDeduction > 0) {
-                    await storage.createCommission({
-                      barbershopId: req.session.barbershopId!,
-                      barberId: commission.barberId,
-                      comandaItemId: commission.comandaItemId,
-                      amount: `-${feeDeduction.toFixed(2)}`,
-                      type: 'fee_deduction',
-                      paid: false
-                    });
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-      
+      // Caminho 2: UPDATE normal (não-fechamento) — fluxo simples original
+      const comanda = await storage.updateComanda(req.params.id, req.body);
       res.json(comanda);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -2732,7 +2620,7 @@ export async function registerRoutes(
     try {
       // Verificar se a comanda está aberta antes de adicionar itens
       const comanda = await storage.getComanda(req.params.id);
-      if (!comanda) {
+      if (!comanda || comanda.barbershopId !== req.session.barbershopId) {
         return res.status(404).json({ error: "Comanda não encontrada" });
       }
       if (comanda.status !== 'open') {
@@ -2784,7 +2672,7 @@ export async function registerRoutes(
     try {
       // Verificar se a comanda está aberta antes de remover itens
       const comanda = await storage.getComanda(req.params.comandaId);
-      if (!comanda) {
+      if (!comanda || comanda.barbershopId !== req.session.barbershopId) {
         return res.status(404).json({ error: "Comanda não encontrada" });
       }
       if (comanda.status !== 'open') {
@@ -2809,7 +2697,7 @@ export async function registerRoutes(
   app.post("/api/comandas/:id/refund", requireAuth, async (req, res) => {
     try {
       const comanda = await storage.getComanda(req.params.id);
-      if (!comanda) {
+      if (!comanda || comanda.barbershopId !== req.session.barbershopId) {
         return res.status(404).json({ error: "Comanda não encontrada" });
       }
       if (comanda.status !== 'closed') {
@@ -3004,6 +2892,11 @@ export async function registerRoutes(
 
   app.patch("/api/cash-register/:id", requireAuth, async (req, res) => {
     try {
+      const register = await storage.getCashRegister(req.params.id);
+      if (!register || register.barbershopId !== req.session.barbershopId) {
+        return res.status(404).json({ error: "Caixa não encontrado" });
+      }
+
       const updateData = { ...req.body };
       const forceClose = updateData.forceClose || false;
       delete updateData.forceClose;
@@ -3012,8 +2905,7 @@ export async function registerRoutes(
         const allOpenComandas = await storage.getComandas(req.session.barbershopId!, "open");
         const today = new Date();
 
-        const register = await storage.getCashRegister(req.params.id);
-        const isOldRegister = register && new Date(register.openedAt).toDateString() !== today.toDateString();
+        const isOldRegister = new Date(register.openedAt).toDateString() !== today.toDateString();
 
         if (isOldRegister) {
           // Old register - close without checking comandas at all
@@ -3527,9 +3419,12 @@ export async function registerRoutes(
         }
       }
       
-      await storage.updateClientPackageQuantity(cp.id, cp.quantityRemaining - 1);
-      
-      res.json({ success: true, remainingUses: cp.quantityRemaining - 1 });
+      const updated = await storage.decrementClientPackageAtomic(cp.id, 1);
+      if (!updated) {
+        return res.status(409).json({ error: "Saldo insuficiente — outra operação usou este crédito primeiro" });
+      }
+
+      res.json({ success: true, remainingUses: updated.quantityRemaining });
     } catch (error: any) {
       res.status(400).json({ error: error.message });
     }

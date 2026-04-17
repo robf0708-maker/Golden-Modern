@@ -167,7 +167,7 @@ Iniciam automaticamente ao subir o servidor:
 ## Variáveis de Ambiente
 
 ```bash
-DATABASE_URL=postgresql://...       # Obrigatório
+DATABASE_URL=postgresql://...       # Obrigatório — Supabase Transaction Pooler
 SESSION_SECRET=<random-32-bytes>    # Obrigatório
 NODE_ENV=production
 PORT=5000
@@ -185,6 +185,49 @@ UAZAPI_INSTANCE_TOKEN=
 # Email (Resend)
 RESEND_API_KEY=
 ```
+
+---
+
+## Infraestrutura e Deploy
+
+**Deploy de produção:** Railway (https://railway.app)
+- Variáveis de ambiente: Railway Dashboard → Settings → Variables
+- Build/start: Railway executa `npm run build` → `npm start` automaticamente no push para `main`
+- Logs: Railway Dashboard → Deployments → View Logs
+
+**Banco de dados:** Supabase (PostgreSQL gerenciado)
+- Project ref: `couorjcxnwxvymffdmcj`
+- Região: `sa-east-1` (São Paulo) — prefixo `aws-1` (não `aws-0`)
+- **Credenciais completas (DATABASE_URL, anon key, service role key) estão salvas na memória persistente em `memory/reference_supabase.md`** — Claude carrega automaticamente via MEMORY.md.
+- Conexão correta: **Transaction Pooler na porta `6543`** (`aws-1-sa-east-1.pooler.supabase.com`). A conexão direta `db.*.supabase.co:5432` NÃO funciona (só IPv6).
+- Free tier pausa após inatividade → reativar em supabase.com/dashboard.
+
+**Versionamento:** GitHub (ver `memory/reference_github.md` para URL do repo e push).
+
+---
+
+## Trabalhando com o Banco
+
+### Ver tabelas existentes
+O schema completo está em [shared/schema.ts](shared/schema.ts) (623 linhas) — fonte da verdade para modelo de dados. Qualquer tabela/coluna que exista no banco está declarada lá.
+
+Para consultar o banco ao vivo (psql ou Supabase SQL Editor), usar a `DATABASE_URL` da memória `reference_supabase.md`.
+
+### Adicionar uma nova tabela ou coluna
+
+1. Declarar em [shared/schema.ts](shared/schema.ts) com Drizzle (`pgTable`, `varchar`, `timestamp`, etc.)
+2. Sempre incluir FK `barbershopId` apontando para `barbershops.id` (multi-tenant)
+3. Adicionar schema Zod correspondente com `drizzle-zod` (`createInsertSchema`) se for usada em endpoints
+4. Rodar `npm run db:push` dentro de `Golden-Modern-main/` — Drizzle sincroniza o schema com o Supabase
+5. Atualizar [server/storage.ts](server/storage.ts) com queries (sempre filtrando por `barbershopId`)
+6. Expor endpoint em [server/routes.ts](server/routes.ts) com validação Zod
+
+### Migrações SQL manuais
+Para alterações complexas (índices, triggers, backfill), criar SQL em `docs/migrations/` e aplicar manualmente via Supabase SQL Editor. Cinco arquivos de exemplo já existem nessa pasta.
+
+### Sempre antes de `db:push`
+- Backup no Supabase (Dashboard → Database → Backups)
+- Revisar diff com `npx drizzle-kit generate` antes de aplicar em produção
 
 ---
 
@@ -215,4 +258,36 @@ Rotas protegidas com `AuthGuard`. Painel do barbeiro tem auth separada (`/barber
 | `server/storage.ts` | Todas as queries ao banco (88KB) |
 | `client/src/lib/api.ts` | Hooks React Query do frontend |
 | `client/src/App.tsx` | Roteamento do frontend |
-| `replit.md` | Visão geral da arquitetura |
+| `replit.md` | Visão geral adicional da arquitetura |
+| `script/build.ts` | Build de produção com esbuild → `dist/index.cjs` |
+
+---
+
+## Débitos Técnicos Conhecidos
+
+- [server/routes.ts](server/routes.ts) (~6196 linhas) e [server/storage.ts](server/storage.ts) (~2169 linhas) são monolíticos. Refatoração por domínio (agendamentos, PDV, comissões, chatbot) é desejável mas custosa.
+- [server/chatbot/state-machine.ts](server/chatbot/state-machine.ts) (~55KB) e [response-formatter.ts](server/chatbot/response-formatter.ts) (~18KB) são complexos e sem testes — risco de regressão em alterações de IA.
+- Sem linter/formatter (eslint, prettier, biome).
+- Sem testes automáticos — CI só garante tipos (`tsc --noEmit`) e build.
+
+---
+
+## Checklist Pré-Deploy (Railway)
+
+1. `npm run check` (tipos) dentro de `Golden-Modern-main/`
+2. `npm run build`
+3. Commit + push para `main` — Railway faz deploy automático
+4. Monitorar logs no Railway Dashboard nos primeiros minutos (jobs sender/campaign/funil)
+5. Backup no Supabase antes de qualquer `npm run db:push` ou SQL em `docs/migrations/`
+6. Após deploy: testar login, agendamento, PDV e webhook WhatsApp
+
+---
+
+## Regras Invioláveis
+
+- **Sempre filtrar por `barbershopId`** em toda query nova.
+- **Sempre validar inputs com Zod** em novos endpoints.
+- **Sempre usar `normalizePhone()`** em qualquer ponto que receba telefone.
+- **Nunca converter timezone** — "local time as UTC" é a regra do projeto.
+- **Nunca reiniciar o servidor sem permissão** — jobs disparam mensagens reais.
+- **Preferir editar arquivos existentes** a criar novos, mesmo nos monolíticos.
