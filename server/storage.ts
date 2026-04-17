@@ -1278,11 +1278,34 @@ export class DbStorage implements IStorage {
 
   async getComndasForCashRegisterPeriod(barbershopId: string, openedAt: Date, closedAt: Date | null): Promise<Comanda[]> {
     const endTime = closedAt || new Date();
+
+    // "Início do dia" do caixa atual — garante que vendas de dias anteriores nunca vazam para este caixa
+    const startOfDay = new Date(openedAt);
+    startOfDay.setHours(0, 0, 0, 0);
+
+    // Buscar o caixa anterior fechado do mesmo tenant — permite absorver comandas "flutuantes"
+    // fechadas entre o último caixa e este (ex.: atendente esqueceu de abrir o caixa de manhã)
+    const previousRegister = await db.select().from(schema.cashRegister)
+      .where(and(
+        eq(schema.cashRegister.barbershopId, barbershopId),
+        eq(schema.cashRegister.status, 'closed'),
+        lte(schema.cashRegister.closedAt, openedAt)
+      ))
+      .orderBy(desc(schema.cashRegister.closedAt))
+      .limit(1);
+
+    const previousClosedAt = previousRegister[0]?.closedAt ? new Date(previousRegister[0].closedAt) : null;
+    // periodStart = MAX(fechamento do caixa anterior, início do dia atual).
+    // Caixa anterior do mesmo dia → absorve gap. Caixa anterior de dias passados → descartado.
+    const periodStart = previousClosedAt && previousClosedAt > startOfDay
+      ? previousClosedAt
+      : startOfDay;
+
     return db.select().from(schema.comandas).where(
       and(
         eq(schema.comandas.barbershopId, barbershopId),
         eq(schema.comandas.status, 'closed'),
-        gte(schema.comandas.paidAt, openedAt),
+        gte(schema.comandas.paidAt, periodStart),
         lte(schema.comandas.paidAt, endTime)
       )
     ).orderBy(desc(schema.comandas.paidAt));
