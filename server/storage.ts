@@ -2103,6 +2103,44 @@ export class DbStorage implements IStorage {
     });
   }
 
+  // Helper interno: para cada comissão positiva (não-package_use) da comanda, cria uma
+  // fee_deduction proporcional a feePercentage. Usado pelas transações de criação e
+  // fechamento de comanda para evitar duplicação da lógica.
+  private async applyFeeDeductionsToCommissions(
+    tx: any,
+    barbershopId: string,
+    comandaId: string,
+    feePercentage: number
+  ): Promise<void> {
+    if (feePercentage <= 0) return;
+
+    const items = await tx.select().from(schema.comandaItems)
+      .where(eq(schema.comandaItems.comandaId, comandaId));
+    const itemIds = items.map((i: any) => i.id);
+    if (itemIds.length === 0) return;
+
+    const commissions = await tx.select().from(schema.commissions)
+      .where(inArray(schema.commissions.comandaItemId, itemIds));
+    const positiveCommissions = commissions.filter((c: any) =>
+      parseFloat(c.amount) > 0 && c.type !== 'package_use'
+    );
+
+    for (const commission of positiveCommissions) {
+      const commissionAmount = parseFloat(commission.amount);
+      const feeDeduction = (commissionAmount * feePercentage) / 100;
+      if (feeDeduction > 0) {
+        await tx.insert(schema.commissions).values({
+          barbershopId,
+          barberId: commission.barberId,
+          comandaItemId: commission.comandaItemId,
+          amount: `-${feeDeduction.toFixed(2)}`,
+          type: 'fee_deduction',
+          paid: false,
+        });
+      }
+    }
+  }
+
   // Fecha uma comanda atomicamente: atualiza status, marca agendamento como concluído,
   // baixa estoque dos produtos vendidos e gera as deduções de taxa de cartão/PIX nas comissões.
   // Preserva o comportamento atual: se não houver caixa aberto, deduções não são criadas.
@@ -2189,63 +2227,12 @@ export class DbStorage implements IStorage {
 
             if (totalFeeAmount > 0 && comandaTotal > 0) {
               const effectiveFeePercentage = (totalFeeAmount / comandaTotal) * 100;
-              const itemIdsForCommissions = items.map(i => i.id);
-              const comandaCommissions = itemIdsForCommissions.length > 0
-                ? await tx.select().from(schema.commissions)
-                    .where(inArray(schema.commissions.comandaItemId, itemIdsForCommissions))
-                : [];
-              const positiveCommissions = comandaCommissions.filter(c =>
-                parseFloat(c.amount) > 0 && c.type !== 'package_use'
-              );
-
-              for (const commission of positiveCommissions) {
-                const commissionAmount = parseFloat(commission.amount);
-                const feeDeduction = (commissionAmount * effectiveFeePercentage) / 100;
-
-                if (feeDeduction > 0) {
-                  await tx.insert(schema.commissions).values({
-                    barbershopId,
-                    barberId: commission.barberId,
-                    comandaItemId: commission.comandaItemId,
-                    amount: `-${feeDeduction.toFixed(2)}`,
-                    type: 'fee_deduction',
-                    paid: false,
-                  });
-                }
-              }
+              await this.applyFeeDeductionsToCommissions(tx, barbershopId, comanda.id, effectiveFeePercentage);
             }
           }
 
           if (feePercentage > 0 && comanda.paymentMethod !== 'split') {
-            const comandaTotal = parseFloat(comanda.total || '0');
-            const feeAmount = (comandaTotal * feePercentage) / 100;
-
-            if (feeAmount > 0) {
-              const itemIdsForCommissions = items.map(i => i.id);
-              const comandaCommissions = itemIdsForCommissions.length > 0
-                ? await tx.select().from(schema.commissions)
-                    .where(inArray(schema.commissions.comandaItemId, itemIdsForCommissions))
-                : [];
-              const positiveCommissions = comandaCommissions.filter(c =>
-                parseFloat(c.amount) > 0 && c.type !== 'package_use'
-              );
-
-              for (const commission of positiveCommissions) {
-                const commissionAmount = parseFloat(commission.amount);
-                const feeDeduction = (commissionAmount * feePercentage) / 100;
-
-                if (feeDeduction > 0) {
-                  await tx.insert(schema.commissions).values({
-                    barbershopId,
-                    barberId: commission.barberId,
-                    comandaItemId: commission.comandaItemId,
-                    amount: `-${feeDeduction.toFixed(2)}`,
-                    type: 'fee_deduction',
-                    paid: false,
-                  });
-                }
-              }
-            }
+            await this.applyFeeDeductionsToCommissions(tx, barbershopId, comanda.id, feePercentage);
           }
         }
       }
@@ -2577,62 +2564,12 @@ export class DbStorage implements IStorage {
 
           if (totalFeeAmount > 0 && comandaTotal > 0) {
             const effectiveFeePercentage = (totalFeeAmount / comandaTotal) * 100;
-            const allItems = await tx.select().from(schema.comandaItems)
-              .where(eq(schema.comandaItems.comandaId, comanda.id));
-            const itemIds = allItems.map(i => i.id);
-            const comandaCommissions = itemIds.length > 0
-              ? await tx.select().from(schema.commissions)
-                  .where(inArray(schema.commissions.comandaItemId, itemIds))
-              : [];
-            const positiveCommissions = comandaCommissions.filter(c =>
-              parseFloat(c.amount) > 0 && c.type !== 'package_use'
-            );
-            for (const commission of positiveCommissions) {
-              const commissionAmount = parseFloat(commission.amount);
-              const feeDeduction = (commissionAmount * effectiveFeePercentage) / 100;
-              if (feeDeduction > 0) {
-                await tx.insert(schema.commissions).values({
-                  barbershopId,
-                  barberId: commission.barberId,
-                  comandaItemId: commission.comandaItemId,
-                  amount: `-${feeDeduction.toFixed(2)}`,
-                  type: 'fee_deduction',
-                  paid: false,
-                });
-              }
-            }
+            await this.applyFeeDeductionsToCommissions(tx, barbershopId, comanda.id, effectiveFeePercentage);
           }
         }
 
         if (feePercentage > 0 && paymentMethod !== 'split') {
-          const comandaTotal = parseFloat(comandaData.total || '0');
-          const feeAmount = (comandaTotal * feePercentage) / 100;
-          if (feeAmount > 0) {
-            const allItems = await tx.select().from(schema.comandaItems)
-              .where(eq(schema.comandaItems.comandaId, comanda.id));
-            const itemIds = allItems.map(i => i.id);
-            const comandaCommissions = itemIds.length > 0
-              ? await tx.select().from(schema.commissions)
-                  .where(inArray(schema.commissions.comandaItemId, itemIds))
-              : [];
-            const positiveCommissions = comandaCommissions.filter(c =>
-              parseFloat(c.amount) > 0 && c.type !== 'package_use'
-            );
-            for (const commission of positiveCommissions) {
-              const commissionAmount = parseFloat(commission.amount);
-              const feeDeduction = (commissionAmount * feePercentage) / 100;
-              if (feeDeduction > 0) {
-                await tx.insert(schema.commissions).values({
-                  barbershopId,
-                  barberId: commission.barberId,
-                  comandaItemId: commission.comandaItemId,
-                  amount: `-${feeDeduction.toFixed(2)}`,
-                  type: 'fee_deduction',
-                  paid: false,
-                });
-              }
-            }
-          }
+          await this.applyFeeDeductionsToCommissions(tx, barbershopId, comanda.id, feePercentage);
         }
       }
 
