@@ -49,13 +49,13 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { 
-  useCurrentCashRegister, 
-  useOpenCashRegister, 
-  useCloseCashRegister, 
-  useCashTransactions, 
-  useCreateCashTransaction, 
-  useComandas, 
+import {
+  useCurrentCashRegister,
+  useOpenCashRegister,
+  useCloseCashRegister,
+  useCashTransactions,
+  useCreateCashTransaction,
+  useComandas,
   useCashRegisterHistory,
   useOpenComandasCheck,
   useFixedExpenses,
@@ -63,7 +63,8 @@ import {
   useUpdateFixedExpense,
   useDeleteFixedExpense,
   useDREReport,
-  useRefundComanda
+  useRefundComanda,
+  useCashRegisterSales,
 } from "@/lib/api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Info } from "lucide-react";
@@ -84,9 +85,10 @@ const EXPENSE_CATEGORIES = [
 ];
 
 function HistoryTransactions({ registerId }: { registerId: string }) {
-  const { data: histTransactions = [], isLoading } = useCashTransactions(registerId);
+  const { data: histTransactions = [], isLoading: loadingTx } = useCashTransactions(registerId);
+  const { data: sales, isLoading: loadingSales } = useCashRegisterSales(registerId);
 
-  if (isLoading) {
+  if (loadingTx || loadingSales) {
     return (
       <div className="flex items-center justify-center py-4">
         <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary"></div>
@@ -102,8 +104,39 @@ function HistoryTransactions({ registerId }: { registerId: string }) {
   const totalDeposits = depositsT.reduce((acc: number, t: any) => acc + parseFloat(t.amount), 0);
   const totalRefunds = refundsT.reduce((acc: number, t: any) => acc + parseFloat(t.amount), 0);
 
+  const totalSales = sales?.totalSales ?? 0;
+  const salesCount = sales?.count ?? 0;
+  const cashSales = sales?.cash ?? 0;
+  const pixSales = sales?.pix ?? 0;
+  const cardSales = sales?.card ?? 0;
+
   return (
     <div className="space-y-3">
+      {/* Vendas do período */}
+      <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+        <TrendingUp className="h-4 w-4" />
+        Vendas do período ({salesCount} comandas)
+      </div>
+      <div className="grid grid-cols-4 gap-2 text-xs">
+        <div className="p-2 rounded bg-emerald-500/10 text-center col-span-1">
+          <p className="text-muted-foreground">Total</p>
+          <p className="font-bold text-emerald-500">R$ {totalSales.toFixed(2)}</p>
+        </div>
+        <div className="p-2 rounded bg-green-500/10 text-center">
+          <p className="text-muted-foreground">Dinheiro</p>
+          <p className="font-bold text-green-500">R$ {cashSales.toFixed(2)}</p>
+        </div>
+        <div className="p-2 rounded bg-blue-500/10 text-center">
+          <p className="text-muted-foreground">PIX</p>
+          <p className="font-bold text-blue-500">R$ {pixSales.toFixed(2)}</p>
+        </div>
+        <div className="p-2 rounded bg-purple-500/10 text-center">
+          <p className="text-muted-foreground">Cartão</p>
+          <p className="font-bold text-purple-500">R$ {cardSales.toFixed(2)}</p>
+        </div>
+      </div>
+
+      {/* Movimentações manuais */}
       <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
         <Receipt className="h-4 w-4" />
         Movimentações ({histTransactions.length})
@@ -130,15 +163,15 @@ function HistoryTransactions({ registerId }: { registerId: string }) {
       )}
 
       {histTransactions.length === 0 ? (
-        <p className="text-xs text-muted-foreground text-center py-2">Nenhuma movimentação neste caixa</p>
+        <p className="text-xs text-muted-foreground text-center py-2">Nenhuma movimentação manual neste caixa</p>
       ) : (
         <div className="space-y-1.5 max-h-40 overflow-y-auto">
           {histTransactions.map((t: any) => (
-            <div 
-              key={t.id} 
+            <div
+              key={t.id}
               className={`flex items-center justify-between p-2 rounded text-xs ${
-                t.type === 'withdrawal' 
-                  ? 'bg-red-500/5 border border-red-500/10' 
+                t.type === 'withdrawal'
+                  ? 'bg-red-500/5 border border-red-500/10'
                   : t.type === 'deposit'
                   ? 'bg-green-500/5 border border-green-500/10'
                   : 'bg-orange-500/5 border border-orange-500/10'
@@ -221,6 +254,7 @@ export default function Finance() {
 
   const { data: cashRegister, isLoading, isError: cashRegisterError } = useCurrentCashRegister();
   const { data: transactions = [] } = useCashTransactions(cashRegister?.id?.toString() || "");
+  const { data: currentSales } = useCashRegisterSales(cashRegister?.id?.toString() || "");
   const { data: comandas = [] } = useComandas("closed");
   const { data: cashRegisterHistory = [] } = useCashRegisterHistory();
   const { data: openComandasCheck } = useOpenComandasCheck();
@@ -249,39 +283,18 @@ export default function Finance() {
 
   const sessionComandas = comandas.filter((c: any) => {
     if (!cashRegister) return false;
-    // Usa paidAt (quando foi paga) se disponível, senão createdAt
-    // Garante que comandas criadas antes do caixa abrir mas pagas depois sejam contabilizadas
     const comandaDate = new Date(c.paidAt || c.createdAt);
     const registerOpenDate = new Date(cashRegister.openedAt);
     return comandaDate >= registerOpenDate;
   });
 
-  const calculateSalesByMethod = () => {
-    let cash = 0, pix = 0, card = 0;
-    
-    sessionComandas.forEach((c: any) => {
-      const total = parseFloat(c.total || 0);
-      
-      if (c.paymentMethod === 'split' && c.paymentDetails?.split) {
-        c.paymentDetails.split.forEach((p: any) => {
-          if (p.method === 'cash') cash += p.amount;
-          else if (p.method === 'pix') pix += p.amount;
-          else if (p.method === 'card') card += p.amount;
-        });
-      } else if (c.paymentMethod === 'cash') {
-        cash += total;
-      } else if (c.paymentMethod === 'pix') {
-        pix += total;
-      } else if (c.paymentMethod === 'card') {
-        card += total;
-      }
-    });
-    
-    return { cash, pix, card };
+  const salesByMethod = {
+    cash: currentSales?.cash ?? 0,
+    pix: currentSales?.pix ?? 0,
+    card: currentSales?.card ?? 0,
   };
-
-  const salesByMethod = calculateSalesByMethod();
-  const totalSales = salesByMethod.cash + salesByMethod.pix + salesByMethod.card;
+  const totalSales = currentSales?.totalSales ?? 0;
+  const salesCount = currentSales?.count ?? 0;
 
   // Sangrias manuais (saídas do caixa físico)
   const withdrawals = transactions.filter((t: any) => t.type === 'withdrawal').reduce((acc: number, t: any) => acc + parseFloat(t.amount), 0);
@@ -591,7 +604,7 @@ export default function Finance() {
                         R$ {totalSales.toFixed(2)}
                       </p>
                       <p className="text-xs text-muted-foreground mt-1">
-                        {sessionComandas.length} comandas fechadas
+                        {salesCount} comandas fechadas
                       </p>
                     </CardContent>
                   </Card>

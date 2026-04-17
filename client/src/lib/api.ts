@@ -524,13 +524,16 @@ export function useCreateComanda() {
       queryClient.invalidateQueries({ queryKey: ["/comandas"] });
       queryClient.invalidateQueries({ queryKey: ["/cash-register/current"] });
       queryClient.invalidateQueries({ queryKey: ["/cash-register/transactions"] });
+      queryClient.invalidateQueries({ predicate: (query) =>
+        Array.isArray(query.queryKey) && query.queryKey[0] === "/cash-register/sales"
+      });
       // Invalidar todas as variantes de comissões (com diferentes parâmetros de data/barbeiro)
-      queryClient.invalidateQueries({ predicate: (query) => 
+      queryClient.invalidateQueries({ predicate: (query) =>
         Array.isArray(query.queryKey) && query.queryKey[0] === "/commissions"
       });
       queryClient.invalidateQueries({ queryKey: ["/dashboard/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/products"] }); // Atualizar estoque
-      queryClient.invalidateQueries({ predicate: (query) => 
+      queryClient.invalidateQueries({ predicate: (query) =>
         Array.isArray(query.queryKey) && query.queryKey[0] === "/barber-purchases"
       });
     },
@@ -549,12 +552,15 @@ export function useUpdateComanda() {
       queryClient.invalidateQueries({ queryKey: ["/comandas"] });
       queryClient.invalidateQueries({ queryKey: ["/cash-register/current"] });
       queryClient.invalidateQueries({ queryKey: ["/cash-register/transactions"] });
-      queryClient.invalidateQueries({ predicate: (query) => 
+      queryClient.invalidateQueries({ predicate: (query) =>
+        Array.isArray(query.queryKey) && query.queryKey[0] === "/cash-register/sales"
+      });
+      queryClient.invalidateQueries({ predicate: (query) =>
         Array.isArray(query.queryKey) && query.queryKey[0] === "/commissions"
       });
       queryClient.invalidateQueries({ queryKey: ["/dashboard/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/products"] });
-      queryClient.invalidateQueries({ predicate: (query) => 
+      queryClient.invalidateQueries({ predicate: (query) =>
         Array.isArray(query.queryKey) && query.queryKey[0] === "/barber-purchases"
       });
     },
@@ -665,6 +671,15 @@ export function useCashTransactions(cashRegisterId: string) {
     queryKey: ["/cash-register/transactions", cashRegisterId],
     queryFn: () => fetchAPI(`/cash-register/${cashRegisterId}/transactions`),
     enabled: !!cashRegisterId,
+  });
+}
+
+export function useCashRegisterSales(cashRegisterId: string) {
+  return useQuery({
+    queryKey: ["/cash-register/sales", cashRegisterId],
+    queryFn: () => fetchAPI(`/cash-register/${cashRegisterId}/sales`),
+    enabled: !!cashRegisterId,
+    staleTime: 0,
   });
 }
 

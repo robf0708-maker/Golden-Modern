@@ -2906,6 +2906,60 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/cash-register/:id/sales", requireAuth, async (req, res) => {
+    try {
+      const barbershopId = req.session.barbershopId!;
+      const register = await storage.getCashRegister(req.params.id);
+      if (!register || register.barbershopId !== barbershopId) {
+        return res.status(404).json({ error: "Caixa não encontrado" });
+      }
+
+      const comandas = await storage.getComndasForCashRegisterPeriod(
+        barbershopId,
+        new Date(register.openedAt),
+        register.closedAt ? new Date(register.closedAt) : null
+      );
+
+      let cash = 0, pix = 0, card = 0, other = 0;
+      let count = 0;
+
+      for (const c of comandas) {
+        const total = parseFloat(c.total || "0");
+        if (total <= 0) continue;
+        count++;
+
+        if (c.paymentMethod === "split" && (c.paymentDetails as any)?.split) {
+          for (const p of (c.paymentDetails as any).split) {
+            const amt = parseFloat(p.amount) || 0;
+            if (p.method === "cash") cash += amt;
+            else if (p.method === "pix") pix += amt;
+            else if (p.method === "card") card += amt;
+            else other += amt;
+          }
+        } else if (c.paymentMethod === "cash") {
+          cash += total;
+        } else if (c.paymentMethod === "pix") {
+          pix += total;
+        } else if (c.paymentMethod === "card" || c.paymentMethod === "credito" || c.paymentMethod === "debito") {
+          card += total;
+        } else {
+          other += total;
+        }
+      }
+
+      res.json({
+        totalSales: cash + pix + card + other,
+        cash,
+        pix,
+        card,
+        other,
+        count,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.post("/api/cash-register", requireAuth, async (req, res) => {
     try {
       const existingOpen = await storage.getOpenCashRegister(req.session.barbershopId!);

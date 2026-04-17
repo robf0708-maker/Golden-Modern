@@ -211,6 +211,8 @@ export interface IStorage {
   createCashRegister(cashRegister: InsertCashRegister): Promise<CashRegister>;
   updateCashRegister(id: string, cashRegister: Partial<InsertCashRegister>): Promise<CashRegister | undefined>;
   
+  getComndasForCashRegisterPeriod(barbershopId: string, openedAt: Date, closedAt: Date | null): Promise<Comanda[]>;
+
   // Cash Transactions
   getCashTransactions(cashRegisterId: string): Promise<CashTransaction[]>;
   createCashTransaction(transaction: InsertCashTransaction): Promise<CashTransaction>;
@@ -1246,6 +1248,18 @@ export class DbStorage implements IStorage {
   async updateCashRegister(id: string, cashRegister: Partial<InsertCashRegister>): Promise<CashRegister | undefined> {
     const result = await db.update(schema.cashRegister).set(cashRegister).where(eq(schema.cashRegister.id, id)).returning();
     return result[0];
+  }
+
+  async getComndasForCashRegisterPeriod(barbershopId: string, openedAt: Date, closedAt: Date | null): Promise<Comanda[]> {
+    const endTime = closedAt || new Date();
+    return db.select().from(schema.comandas).where(
+      and(
+        eq(schema.comandas.barbershopId, barbershopId),
+        eq(schema.comandas.status, 'closed'),
+        gte(schema.comandas.paidAt, openedAt),
+        lte(schema.comandas.paidAt, endTime)
+      )
+    ).orderBy(desc(schema.comandas.paidAt));
   }
 
   // Cash Transactions
