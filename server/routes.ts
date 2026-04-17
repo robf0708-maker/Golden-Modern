@@ -738,9 +738,25 @@ export async function registerRoutes(
     }
   });
 
+  // Whitelist de campos editáveis por usuário via API. Campos calculados pelo sistema
+  // (totalVisits, totalSpent, lastVisitAt, clientStatus, etc.) e campos protegidos
+  // (id, barbershopId, createdAt) são ignorados silenciosamente se vierem no payload.
+  const updateClientSchema = z.object({
+    name: z.string().min(1).optional(),
+    phone: z.string().optional(),
+    email: z.string().email().nullable().optional(),
+    notes: z.string().nullable().optional(),
+    preferredBarberId: z.string().nullable().optional(),
+  });
+
   app.patch("/api/clients/:id", requireAuth, async (req, res) => {
     try {
-      const updates = { ...req.body };
+      const existing = await storage.getClient(req.params.id);
+      if (!existing || existing.barbershopId !== req.session.barbershopId) {
+        return res.status(404).json({ error: "Cliente não encontrado" });
+      }
+
+      const updates = updateClientSchema.parse(req.body);
       if (updates.phone) {
         updates.phone = normalizePhone(updates.phone);
         if (!isValidBrazilianPhone(updates.phone)) {
@@ -749,6 +765,20 @@ export async function registerRoutes(
       }
       const client = await storage.updateClient(req.params.id, updates);
       res.json(client);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/clients/:id/recalculate", requireAuth, async (req, res) => {
+    try {
+      const existing = await storage.getClient(req.params.id);
+      if (!existing || existing.barbershopId !== req.session.barbershopId) {
+        return res.status(404).json({ error: "Cliente não encontrado" });
+      }
+      await storage.updateClientFunnelData(req.params.id, req.session.barbershopId!);
+      const updated = await storage.getClient(req.params.id);
+      res.json(updated);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
     }
