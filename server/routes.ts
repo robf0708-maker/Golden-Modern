@@ -2206,6 +2206,20 @@ export async function registerRoutes(
 
       // Caminho 1: FECHAMENTO — tudo em uma transação atômica
       if (isClosing) {
+        // Validar split: soma das formas de pagamento deve bater com o total da comanda
+        if (req.body.paymentMethod === 'split' && req.body.paymentDetails?.split) {
+          const comandaTotal = parseFloat(existingComanda.total || '0');
+          const splitSum = req.body.paymentDetails.split.reduce(
+            (s: number, p: any) => s + parseFloat(p.amount || '0'),
+            0
+          );
+          if (Math.abs(splitSum - comandaTotal) > 0.01) {
+            return res.status(400).json({
+              error: `A soma das formas de pagamento (R$ ${splitSum.toFixed(2)}) não bate com o total da comanda (R$ ${comandaTotal.toFixed(2)}).`
+            });
+          }
+        }
+
         const updateData = { ...req.body, paidAt: new Date() };
         const comanda = await storage.closeComandaTransaction(
           req.params.id,
@@ -2653,6 +2667,10 @@ export async function registerRoutes(
 
   app.get("/api/cash-register/:id/transactions", requireAuth, async (req, res) => {
     try {
+      const register = await storage.getCashRegister(req.params.id);
+      if (!register || register.barbershopId !== req.session.barbershopId) {
+        return res.status(403).json({ error: "Acesso negado" });
+      }
       const transactions = await storage.getCashTransactions(req.params.id);
       res.json(transactions);
     } catch (error: any) {
@@ -2662,20 +2680,27 @@ export async function registerRoutes(
 
   app.post("/api/cash-register/:id/transactions", requireAuth, async (req, res) => {
     try {
+      const register = await storage.getCashRegister(req.params.id);
+      if (!register || register.barbershopId !== req.session.barbershopId) {
+        return res.status(403).json({ error: "Acesso negado" });
+      }
+      if (register.status === "closed") {
+        return res.status(400).json({ error: "Não é possível adicionar transações a um caixa já fechado." });
+      }
+
       let { type, amount, description } = req.body;
-      
-      // Validação para estornos: garantir que o valor é armazenado como negativo para auditoria
-      // Estornos representam saídas do caixa, então devem ser negativos
+
+      // Estornos representam saídas do caixa; armazenar como negativo para auditoria
       if (type === 'refund') {
         const absAmount = Math.abs(parseFloat(amount));
         amount = (-absAmount).toFixed(2);
       }
-      
-      const data = insertCashTransactionSchema.parse({ 
-        type, 
-        amount, 
-        description, 
-        cashRegisterId: req.params.id 
+
+      const data = insertCashTransactionSchema.parse({
+        type,
+        amount,
+        description,
+        cashRegisterId: req.params.id
       });
       const transaction = await storage.createCashTransaction(data);
       res.json(transaction);
@@ -4910,7 +4935,43 @@ export async function registerRoutes(
       res.status(500).json({ error: error.message });
     }
   });
-  
+
+  // Marca despesa fixa como paga (NÃO mexe no caixa — são mundos separados).
+  app.post("/api/fixed-expenses/:id/mark-paid", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const barbershopId = req.session.barbershopId!;
+
+      const existing = await storage.getFixedExpense(id);
+      if (!existing || existing.barbershopId !== barbershopId) {
+        return res.status(404).json({ error: "Expense not found" });
+      }
+
+      const expense = await storage.updateFixedExpense(id, { lastPaidAt: new Date() } as any);
+      res.json(expense);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Desfaz a marcação de paga (caso admin tenha marcado por engano).
+  app.post("/api/fixed-expenses/:id/unmark-paid", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const barbershopId = req.session.barbershopId!;
+
+      const existing = await storage.getFixedExpense(id);
+      if (!existing || existing.barbershopId !== barbershopId) {
+        return res.status(404).json({ error: "Expense not found" });
+      }
+
+      const expense = await storage.updateFixedExpense(id, { lastPaidAt: null } as any);
+      res.json(expense);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // ============ DRE REPORT (Relatório Financeiro) ============
   
   app.get("/api/reports/dre", requireAuth, async (req, res) => {
@@ -4936,11 +4997,11 @@ export async function registerRoutes(
       const feeDebit = parseFloat(barbershop?.feeDebit || "0");
       const feePix = parseFloat(barbershop?.feePix || "0");
       
-      // Get all closed comandas in date range
+      // Get all closed comandas in date range (status='closed' garante paidAt preenchido)
       const allComandas = await storage.getComandas(barbershopId, "closed");
       const comandas = allComandas.filter(c => {
         const date = new Date(c.paidAt || c.createdAt);
-        return date >= start && date <= end;
+        return c.paidAt != null && date >= start && date <= end;
       });
       
       // Get barbers for names
@@ -5017,12 +5078,20 @@ export async function registerRoutes(
         }
       });
       
+      // Batch fetch de todos os itens das comandas do período (elimina N+1)
+      const allItemsForPeriod = await storage.getComandaItemsByComandaIds(comandas.map(c => c.id));
+      const itemsByComandaId = new Map<string, typeof allItemsForPeriod>();
+      for (const it of allItemsForPeriod) {
+        const arr = itemsByComandaId.get(it.comandaId) || [];
+        arr.push(it);
+        itemsByComandaId.set(it.comandaId, arr);
+      }
+
       for (const comanda of comandas) {
         const total = parseFloat(comanda.total || "0");
         const date = new Date(comanda.paidAt || comanda.createdAt);
-        
-        // Get comanda items for details with real names
-        const items = await storage.getComandaItems(comanda.id);
+
+        const items = itemsByComandaId.get(comanda.id) || [];
         
         // Separar comandas de consumo interno (todos os itens são isBarberPurchase e total é 0)
         const allItemsAreBarberPurchase = items.length > 0 && items.every(i => i.isBarberPurchase);
@@ -5293,36 +5362,79 @@ export async function registerRoutes(
       // Get fixed expenses for the period
       const fixedExpenses = await storage.getFixedExpenses(barbershopId);
       const activeExpenses = fixedExpenses.filter(e => e.active);
-      
+
       // Calculate monthly expense total (prorate if not full month)
       const daysInPeriod = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
       const daysInMonth = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate();
       const periodRatio = Math.min(daysInPeriod / daysInMonth, 1);
-      
-      const totalFixedExpenses = activeExpenses.reduce((sum, e) => {
+
+      // Valor proporcional ao período para cada despesa ativa
+      const expenseProratedAmount = (e: typeof activeExpenses[number]): number => {
         const amount = parseFloat(e.amount);
+        if (e.recurrence === 'monthly') return amount * periodRatio;
+        if (e.recurrence === 'weekly') return amount * (daysInPeriod / 7);
+        if (e.recurrence === 'daily') return amount * daysInPeriod;
+        return amount;
+      };
+
+      // Classifica cada despesa como paga/pendente dentro do período do DRE
+      // Regra: despesa está "paga" se lastPaidAt cai dentro do ciclo corrente de recorrência
+      const isExpensePaidInPeriod = (e: typeof activeExpenses[number]): boolean => {
+        if (!e.lastPaidAt) return false;
+        const paidAt = new Date(e.lastPaidAt);
         if (e.recurrence === 'monthly') {
-          return sum + (amount * periodRatio);
-        } else if (e.recurrence === 'weekly') {
-          return sum + (amount * (daysInPeriod / 7));
-        } else if (e.recurrence === 'daily') {
-          return sum + (amount * daysInPeriod);
+          return paidAt.getFullYear() === start.getFullYear() && paidAt.getMonth() === start.getMonth();
         }
-        return sum + amount;
-      }, 0);
-      
+        if (e.recurrence === 'weekly') {
+          const msPerDay = 24 * 60 * 60 * 1000;
+          const diffDays = (start.getTime() - paidAt.getTime()) / msPerDay;
+          return diffDays >= 0 && diffDays < 7;
+        }
+        if (e.recurrence === 'daily') {
+          return paidAt.toISOString().slice(0, 10) === start.toISOString().slice(0, 10);
+        }
+        return !!e.lastPaidAt;
+      };
+
+      let fixedExpensesPaid = 0;
+      let fixedExpensesPending = 0;
+      const fixedExpensesPendingList: Array<{ id: string; name: string; amount: number; category: string; dueDay: number | null }> = [];
+      for (const e of activeExpenses) {
+        const prorated = expenseProratedAmount(e);
+        if (isExpensePaidInPeriod(e)) {
+          fixedExpensesPaid += prorated;
+        } else {
+          fixedExpensesPending += prorated;
+          fixedExpensesPendingList.push({
+            id: e.id,
+            name: e.name,
+            amount: prorated,
+            category: e.category,
+            dueDay: e.dueDay ?? null,
+          });
+        }
+      }
+      const totalFixedExpenses = fixedExpensesPaid + fixedExpensesPending; // retrocompatibilidade
+
       // Calculate totals
       const grossTotal = cashTotal + pixTotal + creditTotal + debitTotal;
       const totalFees = cashFees + pixFees + creditFees + debitFees;
       const netTotal = grossTotal - totalFees;
-      
-      // Calculate total commissions to pay
-      const totalCommissions = pendingCommissions.reduce((sum, c) => sum + parseFloat(c.amount || '0'), 0);
-      
-      // Saldo Líquido Real = Bruto - Taxas - Comissões
+
+      // Comissão dos barbeiros sobre serviços/pacotes (tabela commissions)
+      const serviceCommissions = pendingCommissions.reduce((sum, c) => sum + parseFloat(c.amount || '0'), 0);
+
+      // Comissão dos barbeiros sobre venda de produtos (calculada in-memory a partir de productSales)
+      const productCommissions = Array.from(productSales.values()).reduce((sum, p) => sum + p.commission, 0);
+
+      // Total de comissões a pagar (serviços + produtos) — afeta o lucro real
+      const totalCommissions = serviceCommissions + productCommissions;
+
+      // Saldo Líquido Real = Bruto - Taxas - Comissões (serviços + produtos)
       const netRealBalance = grossTotal - totalFees - totalCommissions;
-      
-      const result = netTotal - totalFixedExpenses;
+
+      // Lucro abate apenas despesas já pagas (pendentes ficam destacadas como aviso, sem distorcer o lucro real)
+      const result = netTotal - fixedExpensesPaid;
       
       // Prepare barber panel data
       const barberPanel = Array.from(barberStats.values())
@@ -5352,11 +5464,19 @@ export async function registerRoutes(
       const prevStart = new Date(prevEnd.getTime() - periodMs + 1);
       const prevComandas = allComandas.filter(c => {
         const d = new Date(c.paidAt || c.createdAt);
-        return d >= prevStart && d <= prevEnd;
+        return c.paidAt != null && d >= prevStart && d <= prevEnd;
       });
       let previousGrossTotal = 0;
+      // Batch fetch dos itens do período anterior (elimina N+1)
+      const prevItemsAll = await storage.getComandaItemsByComandaIds(prevComandas.map(c => c.id));
+      const prevItemsByComandaId = new Map<string, typeof prevItemsAll>();
+      for (const it of prevItemsAll) {
+        const arr = prevItemsByComandaId.get(it.comandaId) || [];
+        arr.push(it);
+        prevItemsByComandaId.set(it.comandaId, arr);
+      }
       for (const comanda of prevComandas) {
-        const items = await storage.getComandaItems(comanda.id);
+        const items = prevItemsByComandaId.get(comanda.id) || [];
         const allItemsAreBarberPurchase = items.length > 0 && items.every(i => i.isBarberPurchase);
         const t = parseFloat(comanda.total || "0");
         if (allItemsAreBarberPurchase && t === 0) continue;
@@ -5384,7 +5504,14 @@ export async function registerRoutes(
           message: `${inactiveCount} clientes inativos no funil.`,
         });
       }
-      
+      if (fixedExpensesPending > 0) {
+        alerts.push({
+          type: 'fixed_expenses_pending',
+          severity: 'warning',
+          message: `Você tem R$ ${fixedExpensesPending.toFixed(2)} em despesas fixas pendentes — marque como pagas na aba Despesas Fixas para abater do lucro.`,
+        });
+      }
+
       res.json({
         period: { start: start.toISOString(), end: end.toISOString() },
         summary: {
@@ -5392,10 +5519,15 @@ export async function registerRoutes(
           totalFees,
           netTotal,
           fixedExpenses: totalFixedExpenses,
+          fixedExpensesPaid,
+          fixedExpensesPending,
           totalCommissions,
+          serviceCommissions,
+          productCommissions,
           netRealBalance,
           result
         },
+        fixedExpensesPendingList,
         barberPanel,
         productSalesPanel,
         stockPanel,

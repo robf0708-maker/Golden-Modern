@@ -7,6 +7,10 @@ import { scheduleFunnelMessage } from './scheduler';
 const SENDER_LOCK_KEY = 42001;
 const FUNNEL_LOCK_KEY = 42003;
 
+// Janela máxima de atraso: mensagens com scheduledFor mais antigo que isso são descartadas.
+// Protege contra disparo em massa quando o servidor volta após ficar fora do ar por muito tempo.
+const MAX_DELAY_MS = 15 * 60 * 1000; // 15 minutos
+
 let isRunning = false;
 let intervalId: NodeJS.Timeout | null = null;
 let funnelJobIntervalId: NodeJS.Timeout | null = null;
@@ -30,6 +34,18 @@ export async function processPendingMessages(): Promise<void> {
           const now = getNowAsUtcLocal();
           const scheduledFor = new Date(message.scheduledFor);
           if (scheduledFor > now) {
+            continue;
+          }
+
+          // Mensagem atrasada além da janela: descarta em vez de disparar "com atraso".
+          // Evita flood ao religar o servidor após queda longa (incidente histórico: 36 msgs).
+          const delayMs = now.getTime() - scheduledFor.getTime();
+          if (delayMs > MAX_DELAY_MS) {
+            await storage.updateScheduledMessage(message.id, {
+              status: 'expired',
+              error: `Descartada por atraso > ${MAX_DELAY_MS / 60000} min (atraso real: ${Math.round(delayMs / 60000)} min)`,
+            } as any);
+            console.warn(`[MessageSender] Mensagem ${message.id} expirada (atraso ${Math.round(delayMs / 60000)} min) — descartada sem enviar`);
             continue;
           }
 
@@ -224,10 +240,12 @@ export function startMessageSenderJob(intervalMs: number = 60000): void {
     return;
   }
 
-  console.log(`[MessageSender] Iniciando job com intervalo de ${intervalMs}ms`);
-  
-  processPendingMessages();
-  
+  // Grace window: aguarda 30s antes do primeiro tick após subir o servidor.
+  // Combinado com a janela de expiração (MAX_DELAY_MS), dá tempo de abortar se algo estiver errado.
+  console.log(`[MessageSender] Iniciando job com intervalo de ${intervalMs}ms (primeiro tick em 30s)`);
+
+  setTimeout(() => processPendingMessages(), 30_000);
+
   intervalId = setInterval(async () => {
     await processPendingMessages();
   }, intervalMs);

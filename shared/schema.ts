@@ -543,10 +543,11 @@ export const fixedExpenses = pgTable("fixed_expenses", {
   recurrence: text("recurrence").notNull().default("monthly"), // monthly, weekly, daily
   dueDay: integer("due_day"), // dia do mês para pagamento (1-31)
   active: boolean("active").notNull().default(true),
+  lastPaidAt: timestamp("last_paid_at"), // marca o último pagamento; usado no DRE para classificar "paga" vs "pendente" no período
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const insertFixedExpenseSchema = createInsertSchema(fixedExpenses).omit({ id: true, createdAt: true });
+export const insertFixedExpenseSchema = createInsertSchema(fixedExpenses).omit({ id: true, createdAt: true, lastPaidAt: true });
 export type InsertFixedExpense = z.infer<typeof insertFixedExpenseSchema>;
 export type FixedExpense = typeof fixedExpenses.$inferSelect;
 

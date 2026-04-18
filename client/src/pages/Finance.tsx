@@ -62,6 +62,8 @@ import {
   useCreateFixedExpense,
   useUpdateFixedExpense,
   useDeleteFixedExpense,
+  useMarkFixedExpensePaid,
+  useUnmarkFixedExpensePaid,
   useDREReport,
   useRefundComanda,
   useCashRegisterSales,
@@ -277,6 +279,8 @@ export default function Finance() {
   const createExpenseMutation = useCreateFixedExpense();
   const updateExpenseMutation = useUpdateFixedExpense();
   const deleteExpenseMutation = useDeleteFixedExpense();
+  const markPaidMutation = useMarkFixedExpensePaid();
+  const unmarkPaidMutation = useUnmarkFixedExpensePaid();
   const refundMutation = useRefundComanda();
   const [refundComandaId, setRefundComandaId] = useState<string | null>(null);
   const [showRefundDialog, setShowRefundDialog] = useState(false);
@@ -1444,10 +1448,29 @@ export default function Finance() {
                 fixedExpenses.map((expense: any) => {
                   const category = EXPENSE_CATEGORIES.find(c => c.value === expense.category) || EXPENSE_CATEGORIES[5];
                   const CategoryIcon = category.icon;
-                  
+
+                  // Está paga no ciclo atual? (alinhado com a lógica do backend no DRE)
+                  const isPaidInCurrentCycle = (() => {
+                    if (!expense.lastPaidAt) return false;
+                    const paid = new Date(expense.lastPaidAt);
+                    const now = new Date();
+                    if (expense.recurrence === 'monthly') {
+                      return paid.getFullYear() === now.getFullYear() && paid.getMonth() === now.getMonth();
+                    }
+                    if (expense.recurrence === 'weekly') {
+                      const msPerDay = 24 * 60 * 60 * 1000;
+                      const diffDays = (now.getTime() - paid.getTime()) / msPerDay;
+                      return diffDays >= 0 && diffDays < 7;
+                    }
+                    if (expense.recurrence === 'daily') {
+                      return paid.toISOString().slice(0, 10) === now.toISOString().slice(0, 10);
+                    }
+                    return !!expense.lastPaidAt;
+                  })();
+
                   return (
-                    <Card 
-                      key={expense.id} 
+                    <Card
+                      key={expense.id}
                       className={`border-border/50 ${expense.active ? 'bg-card/50' : 'bg-card/30 opacity-60'}`}
                       data-testid={`expense-card-${expense.id}`}
                     >
@@ -1491,10 +1514,50 @@ export default function Finance() {
                         <div className="flex items-center gap-2 mt-2 text-xs text-muted-foreground">
                           <Calendar className="h-3 w-3" />
                           <span>
-                            {expense.recurrence === 'monthly' ? 'Mensal' : 
+                            {expense.recurrence === 'monthly' ? 'Mensal' :
                              expense.recurrence === 'weekly' ? 'Semanal' : 'Diário'}
                             {expense.dueDay && ` • Dia ${expense.dueDay}`}
                           </span>
+                        </div>
+
+                        <div className="mt-3 pt-3 border-t border-border/50 flex items-center justify-between">
+                          {isPaidInCurrentCycle ? (
+                            <>
+                              <div className="flex items-center gap-1.5 text-xs">
+                                <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
+                                <span className="text-green-500 font-medium">
+                                  Paga em {new Date(expense.lastPaidAt).toLocaleDateString('pt-BR')}
+                                </span>
+                              </div>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs text-muted-foreground"
+                                onClick={() => unmarkPaidMutation.mutate(expense.id)}
+                                disabled={unmarkPaidMutation.isPending}
+                                data-testid={`button-unmark-paid-${expense.id}`}
+                              >
+                                Desmarcar
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex items-center gap-1.5 text-xs">
+                                <span className="inline-block w-2 h-2 rounded-full bg-yellow-500" />
+                                <span className="text-yellow-500 font-medium">Pendente</span>
+                              </div>
+                              <Button
+                                variant="default"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => markPaidMutation.mutate(expense.id)}
+                                disabled={markPaidMutation.isPending}
+                                data-testid={`button-mark-paid-${expense.id}`}
+                              >
+                                Marcar como paga
+                              </Button>
+                            </>
+                          )}
                         </div>
                       </CardContent>
                     </Card>

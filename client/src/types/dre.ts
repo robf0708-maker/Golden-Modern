@@ -32,9 +32,21 @@ export interface DreSummary {
   totalFees: number;
   netTotal: number;
   fixedExpenses: number;
+  fixedExpensesPaid?: number;
+  fixedExpensesPending?: number;
   totalCommissions: number;
+  serviceCommissions?: number;
+  productCommissions?: number;
   netRealBalance: number;
   result: number;
+}
+
+export interface DreFixedExpensePendingRow {
+  id: string;
+  name: string;
+  amount: number;
+  category: string;
+  dueDay: number | null;
 }
 
 export interface DreReportPayload {
@@ -61,6 +73,7 @@ export interface DreReportPayload {
   };
   feeRates?: { credit?: number; debit?: number; pix?: number };
   fixedExpensesList?: unknown[];
+  fixedExpensesPendingList?: DreFixedExpensePendingRow[];
   transactions?: unknown[];
   transactionCount?: number;
   internalConsumptions?: unknown[];

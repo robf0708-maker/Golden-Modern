@@ -204,6 +204,7 @@ export interface IStorage {
   
   // Comanda Items
   getComandaItems(comandaId: string): Promise<ComandaItem[]>;
+  getComandaItemsByComandaIds(comandaIds: string[]): Promise<ComandaItem[]>;
   createComandaItem(item: InsertComandaItem): Promise<ComandaItem>;
   updateComandaItem(id: string, data: Partial<InsertComandaItem>): Promise<ComandaItem | undefined>;
   deleteComandaItem(id: string): Promise<void>;
@@ -1225,6 +1226,11 @@ export class DbStorage implements IStorage {
   // Comanda Items
   async getComandaItems(comandaId: string): Promise<ComandaItem[]> {
     return db.select().from(schema.comandaItems).where(eq(schema.comandaItems.comandaId, comandaId));
+  }
+
+  async getComandaItemsByComandaIds(comandaIds: string[]): Promise<ComandaItem[]> {
+    if (comandaIds.length === 0) return [];
+    return db.select().from(schema.comandaItems).where(inArray(schema.comandaItems.comandaId, comandaIds));
   }
 
   async createComandaItem(item: InsertComandaItem): Promise<ComandaItem> {

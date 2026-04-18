@@ -671,6 +671,7 @@ export function useCashTransactions(cashRegisterId: string) {
     queryKey: ["/cash-register/transactions", cashRegisterId],
     queryFn: () => fetchAPI(`/cash-register/${cashRegisterId}/transactions`),
     enabled: !!cashRegisterId,
+    staleTime: 30 * 1000,
   });
 }
 
@@ -679,7 +680,7 @@ export function useCashRegisterSales(cashRegisterId: string) {
     queryKey: ["/cash-register/sales", cashRegisterId],
     queryFn: () => fetchAPI(`/cash-register/${cashRegisterId}/sales`),
     enabled: !!cashRegisterId,
-    staleTime: 0,
+    staleTime: 30 * 1000,
   });
 }
 
@@ -835,6 +836,7 @@ export function useFixedExpenses() {
   return useQuery({
     queryKey: ["/fixed-expenses"],
     queryFn: () => fetchAPI("/fixed-expenses"),
+    staleTime: 2 * 60 * 1000,
   });
 }
 
@@ -882,6 +884,30 @@ export function useDeleteFixedExpense() {
   });
 }
 
+export function useMarkFixedExpensePaid() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI(`/fixed-expenses/${id}/mark-paid`, { method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/fixed-expenses"] });
+      queryClient.invalidateQueries({ queryKey: ["/reports/dre"] });
+    },
+  });
+}
+
+export function useUnmarkFixedExpensePaid() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetchAPI(`/fixed-expenses/${id}/unmark-paid`, { method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/fixed-expenses"] });
+      queryClient.invalidateQueries({ queryKey: ["/reports/dre"] });
+    },
+  });
+}
+
 // ============ DRE REPORT ============
 
 export function useDREReport(startDate?: string, endDate?: string) {
@@ -892,6 +918,8 @@ export function useDREReport(startDate?: string, endDate?: string) {
   return useQuery<DreReportPayload>({
     queryKey: ["/reports/dre", startDate, endDate],
     queryFn: () => fetchAPI(`/reports/dre?${params.toString()}`),
+    staleTime: 2 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
   });
 }
 
