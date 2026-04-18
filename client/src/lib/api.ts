@@ -910,16 +910,21 @@ export function useUnmarkFixedExpensePaid() {
 
 // ============ DRE REPORT ============
 
-export function useDREReport(startDate?: string, endDate?: string) {
-  const params = new URLSearchParams();
-  if (startDate) params.append("startDate", startDate);
-  if (endDate) params.append("endDate", endDate);
-  
+// Contrato explícito: startDate e endDate são sempre enviados.
+// O backend usa "hoje" como default caso algum venha vazio — coerente com a UI.
+// staleTime: 5min. O DRE é um retrato financeiro — dados do dia pouco mudam entre
+// clicks de abas; o cache evita refetches desnecessários e reduz carga no banco.
+// Invalidações explícitas (nova comanda, novo pagamento) continuam refrescando a tela.
+export function useDREReport(startDate: string, endDate: string) {
+  const params = new URLSearchParams({ startDate, endDate });
+
   return useQuery<DreReportPayload>({
     queryKey: ["/reports/dre", startDate, endDate],
     queryFn: () => fetchAPI(`/reports/dre?${params.toString()}`),
-    staleTime: 2 * 60 * 1000,
+    enabled: Boolean(startDate && endDate),
+    staleTime: 5 * 60 * 1000,
     gcTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 }
 

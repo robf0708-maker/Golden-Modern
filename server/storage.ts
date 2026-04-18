@@ -28,6 +28,7 @@ import type {
   Subscription, InsertSubscription,
   SubscriptionPayment, InsertSubscriptionPayment,
   FixedExpense, InsertFixedExpense,
+  FixedExpensePayment, InsertFixedExpensePayment,
   RefundNotification, InsertRefundNotification,
   Campaign, InsertCampaign,
   CampaignRecipient, InsertCampaignRecipient,
@@ -132,6 +133,7 @@ export interface IStorage {
   
   // Clients
   getClients(barbershopId: string): Promise<Client[]>;
+  getClientsByIds(ids: string[]): Promise<Client[]>;
   getClient(id: string): Promise<Client | undefined>;
   createClient(client: InsertClient): Promise<Client>;
   updateClient(id: string, client: Partial<InsertClient>): Promise<Client | undefined>;
@@ -173,6 +175,7 @@ export interface IStorage {
   // Client Packages
   getClientPackages(clientId: string): Promise<ClientPackage[]>;
   getAllClientPackages(barbershopId: string): Promise<ClientPackage[]>;
+  getClientPackagesByIds(ids: string[]): Promise<ClientPackage[]>;
   getActiveClientPackages(clientId: string): Promise<ClientPackage[]>;
   createClientPackage(clientPackage: InsertClientPackage): Promise<ClientPackage>;
   updateClientPackage(id: string, data: Partial<InsertClientPackage>): Promise<ClientPackage | undefined>;
@@ -197,6 +200,7 @@ export interface IStorage {
   
   // Comandas
   getComandas(barbershopId: string, status?: string): Promise<Comanda[]>;
+  getComandasInDateRange(barbershopId: string, status: string | undefined, startDate: Date, endDate: Date): Promise<Comanda[]>;
   getComanda(id: string): Promise<Comanda | undefined>;
   getOpenComandaByClient(barbershopId: string, clientId: string): Promise<Comanda | undefined>;
   createComanda(comanda: InsertComanda): Promise<Comanda>;
@@ -298,6 +302,12 @@ export interface IStorage {
   createFixedExpense(expense: InsertFixedExpense): Promise<FixedExpense>;
   updateFixedExpense(id: string, expense: Partial<InsertFixedExpense>): Promise<FixedExpense | undefined>;
   deleteFixedExpense(id: string): Promise<void>;
+
+  // Fixed Expense Payments (histórico real de pagamentos)
+  getFixedExpensePaymentsInRange(barbershopId: string, startDate: Date, endDate: Date): Promise<FixedExpensePayment[]>;
+  getFixedExpensePaymentByPeriod(fixedExpenseId: string, referencePeriod: string): Promise<FixedExpensePayment | undefined>;
+  createFixedExpensePayment(payment: InsertFixedExpensePayment): Promise<FixedExpensePayment>;
+  deleteFixedExpensePayment(fixedExpenseId: string, referencePeriod: string): Promise<void>;
 
   // Refund Operations
   deleteComanda(id: string): Promise<void>;
@@ -405,6 +415,13 @@ export class DbStorage implements IStorage {
   // Clients
   async getClients(barbershopId: string): Promise<Client[]> {
     return db.select().from(schema.clients).where(eq(schema.clients.barbershopId, barbershopId));
+  }
+
+  // Busca em lote por IDs — usado em relatórios para evitar carregar toda a base de clientes
+  // quando só precisamos dos clientes referenciados por um conjunto específico de comandas.
+  async getClientsByIds(ids: string[]): Promise<Client[]> {
+    if (ids.length === 0) return [];
+    return db.select().from(schema.clients).where(inArray(schema.clients.id, ids));
   }
 
   async getClient(id: string): Promise<Client | undefined> {
@@ -1057,10 +1074,17 @@ export class DbStorage implements IStorage {
     const clients = await this.getClients(barbershopId);
     const clientIds = clients.map(c => c.id);
     if (clientIds.length === 0) return [];
-    
+
     return db.select().from(schema.clientPackages).where(
       inArray(schema.clientPackages.clientId, clientIds)
     );
+  }
+
+  // Busca direta por IDs — usada no DRE para evitar carregar todos os client_packages da barbearia
+  // quando só precisamos dos referenciados pelos itens do período consultado.
+  async getClientPackagesByIds(ids: string[]): Promise<ClientPackage[]> {
+    if (ids.length === 0) return [];
+    return db.select().from(schema.clientPackages).where(inArray(schema.clientPackages.id, ids));
   }
 
   async getActiveClientPackages(clientId: string): Promise<ClientPackage[]> {
@@ -1195,6 +1219,22 @@ export class DbStorage implements IStorage {
       conditions.push(eq(schema.comandas.status, status));
     }
     return db.select().from(schema.comandas).where(and(...conditions)).orderBy(desc(schema.comandas.createdAt));
+  }
+
+  // Versão otimizada para relatórios (DRE): filtra no banco por paidAt no intervalo,
+  // evitando trazer todas as comandas da barbearia para memória quando só precisamos de um período.
+  // Para status='closed' (uso típico do DRE), paidAt é sempre preenchido.
+  async getComandasInDateRange(barbershopId: string, status: string | undefined, startDate: Date, endDate: Date): Promise<Comanda[]> {
+    const conditions = [
+      eq(schema.comandas.barbershopId, barbershopId),
+      isNotNull(schema.comandas.paidAt),
+      gte(schema.comandas.paidAt, startDate),
+      lte(schema.comandas.paidAt, endDate),
+    ];
+    if (status) {
+      conditions.push(eq(schema.comandas.status, status));
+    }
+    return db.select().from(schema.comandas).where(and(...conditions)).orderBy(desc(schema.comandas.paidAt));
   }
 
   async getComanda(id: string): Promise<Comanda | undefined> {
@@ -1948,6 +1988,41 @@ export class DbStorage implements IStorage {
 
   async deleteFixedExpense(id: string): Promise<void> {
     await db.delete(schema.fixedExpenses).where(eq(schema.fixedExpenses.id, id));
+  }
+
+  // ==================== Fixed Expense Payments ====================
+  async getFixedExpensePaymentsInRange(barbershopId: string, startDate: Date, endDate: Date): Promise<FixedExpensePayment[]> {
+    return db.select().from(schema.fixedExpensePayments).where(
+      and(
+        eq(schema.fixedExpensePayments.barbershopId, barbershopId),
+        gte(schema.fixedExpensePayments.paidAt, startDate),
+        lte(schema.fixedExpensePayments.paidAt, endDate),
+      )
+    ).orderBy(desc(schema.fixedExpensePayments.paidAt));
+  }
+
+  async getFixedExpensePaymentByPeriod(fixedExpenseId: string, referencePeriod: string): Promise<FixedExpensePayment | undefined> {
+    const result = await db.select().from(schema.fixedExpensePayments).where(
+      and(
+        eq(schema.fixedExpensePayments.fixedExpenseId, fixedExpenseId),
+        eq(schema.fixedExpensePayments.referencePeriod, referencePeriod),
+      )
+    );
+    return result[0];
+  }
+
+  async createFixedExpensePayment(payment: InsertFixedExpensePayment): Promise<FixedExpensePayment> {
+    const result = await db.insert(schema.fixedExpensePayments).values(payment).returning();
+    return result[0];
+  }
+
+  async deleteFixedExpensePayment(fixedExpenseId: string, referencePeriod: string): Promise<void> {
+    await db.delete(schema.fixedExpensePayments).where(
+      and(
+        eq(schema.fixedExpensePayments.fixedExpenseId, fixedExpenseId),
+        eq(schema.fixedExpensePayments.referencePeriod, referencePeriod),
+      )
+    );
   }
 
   // Refund Operations

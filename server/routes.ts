@@ -4937,6 +4937,28 @@ export async function registerRoutes(
   });
 
   // Marca despesa fixa como paga (NÃO mexe no caixa — são mundos separados).
+  // Gera o identificador canônico do ciclo de pagamento:
+  //   monthly → "YYYY-MM"   (um registro por mês)
+  //   weekly  → "YYYY-MM-DD" do início da semana (domingo) — um registro por semana
+  //   daily   → "YYYY-MM-DD"
+  // Usado para deduplicação e consulta no DRE.
+  const buildReferencePeriod = (recurrence: string, at: Date): string => {
+    const yyyy = at.getFullYear();
+    const mm = String(at.getMonth() + 1).padStart(2, '0');
+    const dd = String(at.getDate()).padStart(2, '0');
+    if (recurrence === 'weekly') {
+      const dayOfWeek = at.getDay(); // 0 = domingo
+      const weekStart = new Date(at);
+      weekStart.setDate(at.getDate() - dayOfWeek);
+      return `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`;
+    }
+    if (recurrence === 'daily') {
+      return `${yyyy}-${mm}-${dd}`;
+    }
+    // default monthly
+    return `${yyyy}-${mm}`;
+  };
+
   app.post("/api/fixed-expenses/:id/mark-paid", requireAuth, async (req, res) => {
     try {
       const { id } = req.params;
@@ -4947,7 +4969,30 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Expense not found" });
       }
 
-      const expense = await storage.updateFixedExpense(id, { lastPaidAt: new Date() } as any);
+      // Permite o admin informar data e método de pagamento; se omitido, usa agora.
+      const paidAtInput = typeof req.body?.paidAt === 'string' ? new Date(req.body.paidAt) : new Date();
+      const paidAt = isNaN(paidAtInput.getTime()) ? new Date() : paidAtInput;
+      const paymentMethod = typeof req.body?.paymentMethod === 'string' ? req.body.paymentMethod : null;
+      const notes = typeof req.body?.notes === 'string' ? req.body.notes : null;
+      const amountInput = typeof req.body?.amount === 'number' ? req.body.amount : parseFloat(existing.amount);
+      const referencePeriod = buildReferencePeriod(existing.recurrence, paidAt);
+
+      // Idempotente: se já existe um pagamento no mesmo ciclo, não duplica.
+      const existingPayment = await storage.getFixedExpensePaymentByPeriod(id, referencePeriod);
+      if (!existingPayment) {
+        await storage.createFixedExpensePayment({
+          fixedExpenseId: id,
+          barbershopId,
+          amount: amountInput.toFixed(2),
+          paidAt,
+          referencePeriod,
+          paymentMethod,
+          notes,
+        });
+      }
+
+      // Mantém `lastPaidAt` em sincronia para retrocompatibilidade com código legado.
+      const expense = await storage.updateFixedExpense(id, { lastPaidAt: paidAt } as any);
       res.json(expense);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -4955,6 +5000,8 @@ export async function registerRoutes(
   });
 
   // Desfaz a marcação de paga (caso admin tenha marcado por engano).
+  // Remove o registro do ciclo atual na tabela de pagamentos e limpa `lastPaidAt` se ele
+  // estava apontando para esse mesmo pagamento.
   app.post("/api/fixed-expenses/:id/unmark-paid", requireAuth, async (req, res) => {
     try {
       const { id } = req.params;
@@ -4965,6 +5012,10 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Expense not found" });
       }
 
+      const referenceDate = existing.lastPaidAt ? new Date(existing.lastPaidAt) : new Date();
+      const referencePeriod = buildReferencePeriod(existing.recurrence, referenceDate);
+      await storage.deleteFixedExpensePayment(id, referencePeriod);
+
       const expense = await storage.updateFixedExpense(id, { lastPaidAt: null } as any);
       res.json(expense);
     } catch (error: any) {
@@ -4974,53 +5025,97 @@ export async function registerRoutes(
 
   // ============ DRE REPORT (Relatório Financeiro) ============
   
+  // Schema de validação do range de datas do DRE.
+  // Default coerente com a UI: se não vier data, usa "hoje" (não o mês inteiro).
+  // Formato esperado: YYYY-MM-DD (timezone Brasil, conforme convenção do projeto).
+  const dreDateRangeSchema = z.object({
+    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  }).refine(
+    (data) => !data.startDate || !data.endDate || data.startDate <= data.endDate,
+    { message: "startDate não pode ser maior que endDate" }
+  );
+
   app.get("/api/reports/dre", requireAuth, async (req, res) => {
     try {
       const barbershopId = req.session.barbershopId!;
-      const { startDate, endDate } = req.query;
 
-      // Parse dates usando horário de Brasília (GMT-3) para evitar bug de fuso
+      const parseResult = dreDateRangeSchema.safeParse(req.query);
+      if (!parseResult.success) {
+        return res.status(400).json({
+          message: "Parâmetros de data inválidos",
+          errors: parseResult.error.flatten(),
+        });
+      }
+      const { startDate, endDate } = parseResult.data;
+
+      // Default coerente com a UI (botão "Hoje" é o default no frontend).
+      // Evita processar o mês inteiro quando o usuário pediu apenas o dia.
       const todayBrazil = getBrazilDateString();
-      const start = startDate
-        ? brazilDateToUTCStart(startDate as string)
-        : brazilDateToUTCStart(todayBrazil.slice(0, 8) + '01'); // Primeiro dia do mês atual
-      const end = endDate
-        ? brazilDateToUTCEnd(endDate as string)
-        : brazilDateToUTCEnd(todayBrazil);
+      const startStr = startDate ?? todayBrazil;
+      const endStr = endDate ?? todayBrazil;
 
-      const chartStartStr = (startDate as string) || utcInstantToBrazilDateKey(start);
-      const chartEndStr = (endDate as string) || utcInstantToBrazilDateKey(end);
+      const start = brazilDateToUTCStart(startStr);
+      const end = brazilDateToUTCEnd(endStr);
+
+      const chartStartStr = startStr;
+      const chartEndStr = endStr;
       
-      // Get barbershop for fee rates
-      const barbershop = await storage.getBarbershop(barbershopId);
+      // Período anterior (para cálculo de variação percentual) — calculado antes pois é
+      // buscado em paralelo junto com as demais queries para economizar round-trips.
+      const periodMsForPrev = end.getTime() - start.getTime() + 1;
+      const prevEnd = new Date(start.getTime() - 1);
+      const prevStart = new Date(prevEnd.getTime() - periodMsForPrev + 1);
+
+      // Batch inicial em paralelo: tudo que não depende de comandas roda simultaneamente.
+      // Reduz significativamente o tempo total — antes eram ~10 awaits sequenciais.
+      const [
+        barbershop,
+        comandas,
+        prevComandas,
+        barbers,
+        services,
+        products,
+        packages,
+        allCommissions,
+        fixedExpenses,
+        fixedExpensePaymentsInPeriod,
+        clientsFunnelStats,
+      ] = await Promise.all([
+        storage.getBarbershop(barbershopId),
+        storage.getComandasInDateRange(barbershopId, "closed", start, end),
+        storage.getComandasInDateRange(barbershopId, "closed", prevStart, prevEnd),
+        storage.getBarbers(barbershopId),
+        storage.getServices(barbershopId),
+        storage.getProducts(barbershopId),
+        storage.getPackages(barbershopId),
+        storage.getCommissions(barbershopId, undefined, start, end),
+        storage.getFixedExpenses(barbershopId),
+        storage.getFixedExpensePaymentsInRange(barbershopId, start, end),
+        storage.getClientsFunnelStats(barbershopId),
+      ]);
+
       const feeCredit = parseFloat(barbershop?.feeCredit || "0");
       const feeDebit = parseFloat(barbershop?.feeDebit || "0");
       const feePix = parseFloat(barbershop?.feePix || "0");
-      
-      // Get all closed comandas in date range (status='closed' garante paidAt preenchido)
-      const allComandas = await storage.getComandas(barbershopId, "closed");
-      const comandas = allComandas.filter(c => {
-        const date = new Date(c.paidAt || c.createdAt);
-        return c.paidAt != null && date >= start && date <= end;
-      });
-      
-      // Get barbers for names
-      const barbers = await storage.getBarbers(barbershopId);
+
+      // Maps de lookup O(1) — evita .find() dentro de loops (N+1 em memória)
       const barberMap = new Map(barbers.map(b => [b.id, b.name]));
-      
-      // Get clients for names
-      const clients = await storage.getClients(barbershopId);
-      const clientMap = new Map(clients.map(c => [c.id, c.name]));
-      
-      // Get services and products for names
-      const services = await storage.getServices(barbershopId);
       const serviceMap = new Map(services.map(s => [s.id, s.name]));
-      
-      const products = await storage.getProducts(barbershopId);
       const productMap = new Map(products.map(p => [p.id, p.name]));
-      
-      const packages = await storage.getPackages(barbershopId);
       const packageMap = new Map(packages.map(p => [p.id, p.name]));
+      const productById = new Map(products.map(p => [p.id, p]));
+      const packageById = new Map(packages.map(p => [p.id, p]));
+
+      // Carrega apenas os clientes referenciados pelas comandas do período (não toda a base).
+      // Para obter os nomes na grade de transações. A lista completa de clients não é necessária aqui.
+      const clientIdsInPeriod = Array.from(new Set(
+        comandas.map(c => c.clientId).filter((id): id is string => Boolean(id))
+      ));
+      const clientsInPeriod = clientIdsInPeriod.length > 0
+        ? await storage.getClientsByIds(clientIdsInPeriod)
+        : [];
+      const clientMap = new Map(clientsInPeriod.map(c => [c.id, c.name]));
       
       // Calculate sales by payment method
       let cashTotal = 0, pixTotal = 0, creditTotal = 0, debitTotal = 0;
@@ -5058,17 +5153,7 @@ export async function registerRoutes(
         });
       });
       
-      // Get all client packages for packageValue calculation in DRE
-      const allClientPackages = await storage.getAllClientPackages(barbershopId);
-      
-      // Get commissions for the period
-      const allCommissions = await storage.getCommissions(
-        barbershopId,
-        undefined,
-        start,
-        end
-      );
-      
+      // Commissions já foi carregado no Promise.all acima.
       // Calculate commission totals per barber
       const pendingCommissions = allCommissions.filter(c => !c.paid && c.type !== 'deduction');
       pendingCommissions.forEach(c => {
@@ -5077,8 +5162,8 @@ export async function registerRoutes(
           existing.commission += parseFloat(c.amount || '0');
         }
       });
-      
-      // Batch fetch de todos os itens das comandas do período (elimina N+1)
+
+      // Batch fetch dos itens das comandas do período (elimina N+1)
       const allItemsForPeriod = await storage.getComandaItemsByComandaIds(comandas.map(c => c.id));
       const itemsByComandaId = new Map<string, typeof allItemsForPeriod>();
       for (const it of allItemsForPeriod) {
@@ -5086,6 +5171,16 @@ export async function registerRoutes(
         arr.push(it);
         itemsByComandaId.set(it.comandaId, arr);
       }
+
+      // Carrega apenas os client_packages referenciados pelos itens do período (evita
+      // getAllClientPackages que varria toda a base). Map de lookup O(1) substitui .find() em loops.
+      const clientPackageIdsUsed = Array.from(new Set(
+        allItemsForPeriod
+          .map(it => it.clientPackageId)
+          .filter((id): id is string => Boolean(id))
+      ));
+      const clientPackagesUsed = await storage.getClientPackagesByIds(clientPackageIdsUsed);
+      const clientPackageById = new Map(clientPackagesUsed.map(cp => [cp.id, cp]));
 
       for (const comanda of comandas) {
         const total = parseFloat(comanda.total || "0");
@@ -5138,9 +5233,9 @@ export async function registerRoutes(
           
           // Para package_use, somar o valor proporcional do pacote como produção do barbeiro
           if (item.type === 'package_use' && item.clientPackageId && barberStat) {
-            const clientPkg = allClientPackages.find(cp => cp.id === item.clientPackageId);
+            const clientPkg = clientPackageById.get(item.clientPackageId);
             if (clientPkg) {
-              const pkg = packages.find(p => p.id === clientPkg.packageId);
+              const pkg = packageById.get(clientPkg.packageId);
               if (pkg) {
                 const baseAmount = clientPkg.netAmount ? parseFloat(clientPkg.netAmount) : parseFloat(pkg.price);
                 const totalUses = clientPkg.quantityOriginal || pkg.quantity || 1;
@@ -5151,10 +5246,10 @@ export async function registerRoutes(
               }
             }
           }
-          
+
           // Track product sales
           if (item.type === 'product' && item.productId) {
-            const product = products.find(p => p.id === item.productId);
+            const product = productById.get(item.productId);
             const existing = productSales.get(item.productId);
             const itemTotal = parseFloat(item.total || '0');
             const productCommission = product?.hasCommission && product?.commissionPercentage 
@@ -5185,9 +5280,9 @@ export async function registerRoutes(
             else serviceRevenue.set(sid, { serviceId: sid, name, total: itemTotal });
           }
           if (item.type === 'package_use' && item.clientPackageId) {
-            const clientPkg = allClientPackages.find(cp => cp.id === item.clientPackageId);
+            const clientPkg = clientPackageById.get(item.clientPackageId);
             if (clientPkg) {
-              const pkg = packages.find(p => p.id === clientPkg.packageId);
+              const pkg = packageById.get(clientPkg.packageId);
               if (pkg) {
                 const baseAmount = clientPkg.netAmount ? parseFloat(clientPkg.netAmount) : parseFloat(pkg.price);
                 const totalUses = clientPkg.quantityOriginal || pkg.quantity || 1;
@@ -5311,9 +5406,9 @@ export async function registerRoutes(
               let packageUseValue = 0;
               for (const item of items) {
                 if (item.type === 'package_use' && item.clientPackageId) {
-                  const clientPkg = allClientPackages.find(cp => cp.id === item.clientPackageId);
+                  const clientPkg = clientPackageById.get(item.clientPackageId);
                   if (clientPkg) {
-                    const pkg = packages.find(p => p.id === clientPkg.packageId);
+                    const pkg = packageById.get(clientPkg.packageId);
                     if (pkg) {
                       const baseAmount = clientPkg.netAmount ? parseFloat(clientPkg.netAmount) : parseFloat(pkg.price);
                       const totalUses = clientPkg.quantityOriginal || pkg.quantity || 1;
@@ -5359,8 +5454,7 @@ export async function registerRoutes(
         dailyGross.set(dateKey, (dailyGross.get(dateKey) || 0) + grossDelta);
       }
       
-      // Get fixed expenses for the period
-      const fixedExpenses = await storage.getFixedExpenses(barbershopId);
+      // fixedExpenses já veio do Promise.all inicial
       const activeExpenses = fixedExpenses.filter(e => e.active);
 
       // Calculate monthly expense total (prorate if not full month)
@@ -5377,9 +5471,17 @@ export async function registerRoutes(
         return amount;
       };
 
-      // Classifica cada despesa como paga/pendente dentro do período do DRE
-      // Regra: despesa está "paga" se lastPaidAt cai dentro do ciclo corrente de recorrência
-      const isExpensePaidInPeriod = (e: typeof activeExpenses[number]): boolean => {
+      // Index de pagamentos do período por despesa (O(1) lookup).
+      // Fonte primária de "pago no período": tabela fixed_expense_payments (histórico completo).
+      // Fallback para `lastPaidAt` garante retrocompatibilidade com despesas antigas sem histórico.
+      const paymentsByExpenseId = new Map<string, typeof fixedExpensePaymentsInPeriod>();
+      for (const p of fixedExpensePaymentsInPeriod) {
+        const arr = paymentsByExpenseId.get(p.fixedExpenseId) || [];
+        arr.push(p);
+        paymentsByExpenseId.set(p.fixedExpenseId, arr);
+      }
+
+      const isExpensePaidInPeriodFromLastPaidAt = (e: typeof activeExpenses[number]): boolean => {
         if (!e.lastPaidAt) return false;
         const paidAt = new Date(e.lastPaidAt);
         if (e.recurrence === 'monthly') {
@@ -5401,7 +5503,14 @@ export async function registerRoutes(
       const fixedExpensesPendingList: Array<{ id: string; name: string; amount: number; category: string; dueDay: number | null }> = [];
       for (const e of activeExpenses) {
         const prorated = expenseProratedAmount(e);
-        if (isExpensePaidInPeriod(e)) {
+        const paymentsForExpense = paymentsByExpenseId.get(e.id);
+
+        if (paymentsForExpense && paymentsForExpense.length > 0) {
+          // Novo comportamento: usa valor realmente pago (pode diferir do orçado).
+          const sumPaid = paymentsForExpense.reduce((acc, p) => acc + parseFloat(p.amount), 0);
+          fixedExpensesPaid += sumPaid;
+        } else if (isExpensePaidInPeriodFromLastPaidAt(e)) {
+          // Retrocompat: despesa antiga com lastPaidAt mas sem histórico → conta como paga pelo valor prorateado.
           fixedExpensesPaid += prorated;
         } else {
           fixedExpensesPending += prorated;
@@ -5459,15 +5568,9 @@ export async function registerRoutes(
       const chart = { points: buildChartPoints(dailyGross, chartStartStr, chartEndStr) };
       const serviceRevenueSorted = Array.from(serviceRevenue.values()).sort((a, b) => b.total - a.total);
 
-      const periodMs = end.getTime() - start.getTime() + 1;
-      const prevEnd = new Date(start.getTime() - 1);
-      const prevStart = new Date(prevEnd.getTime() - periodMs + 1);
-      const prevComandas = allComandas.filter(c => {
-        const d = new Date(c.paidAt || c.createdAt);
-        return c.paidAt != null && d >= prevStart && d <= prevEnd;
-      });
-      let previousGrossTotal = 0;
+      // prevComandas, prevStart e prevEnd já vieram do Promise.all inicial (filtro no banco).
       // Batch fetch dos itens do período anterior (elimina N+1)
+      let previousGrossTotal = 0;
       const prevItemsAll = await storage.getComandaItemsByComandaIds(prevComandas.map(c => c.id));
       const prevItemsByComandaId = new Map<string, typeof prevItemsAll>();
       for (const it of prevItemsAll) {
@@ -5484,7 +5587,6 @@ export async function registerRoutes(
         previousGrossTotal += sumGrossFromBreakdown(b);
       }
 
-      const clientsFunnelStats = await storage.getClientsFunnelStats(barbershopId);
       const inactiveCount = clientsFunnelStats.counts.cliente_inativo ?? 0;
       const alerts: Array<{ type: string; severity: 'warning' | 'info'; message: string }> = [];
       if (previousGrossTotal > 0) {

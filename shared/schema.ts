@@ -551,6 +551,27 @@ export const insertFixedExpenseSchema = createInsertSchema(fixedExpenses).omit({
 export type InsertFixedExpense = z.infer<typeof insertFixedExpenseSchema>;
 export type FixedExpense = typeof fixedExpenses.$inferSelect;
 
+// Histórico de pagamentos de despesas fixas.
+// Resolve a limitação de `fixedExpenses.lastPaidAt` (só guarda o último pagamento):
+// agora o DRE de qualquer mês anterior sempre sabe o que foi efetivamente pago naquele período.
+// `referencePeriod` é o identificador canônico do ciclo que este pagamento cobre ("YYYY-MM" para mensal,
+// "YYYY-MM-DD" para semanal/diário) — facilita a classificação "pago no período" sem depender de datas exatas.
+export const fixedExpensePayments = pgTable("fixed_expense_payments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fixedExpenseId: varchar("fixed_expense_id").notNull().references(() => fixedExpenses.id, { onDelete: "cascade" }),
+  barbershopId: varchar("barbershop_id").notNull().references(() => barbershops.id, { onDelete: "cascade" }),
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  paidAt: timestamp("paid_at").notNull(),
+  referencePeriod: text("reference_period").notNull(), // "2026-04" (mensal), "2026-04-18" (weekly/daily)
+  paymentMethod: text("payment_method"), // cash, pix, card, transfer
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertFixedExpensePaymentSchema = createInsertSchema(fixedExpensePayments).omit({ id: true, createdAt: true });
+export type InsertFixedExpensePayment = z.infer<typeof insertFixedExpensePaymentSchema>;
+export type FixedExpensePayment = typeof fixedExpensePayments.$inferSelect;
+
 // Refund Notifications (notificações de estorno para barbeiros)
 export const refundNotifications = pgTable("refund_notifications", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

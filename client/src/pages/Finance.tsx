@@ -8,6 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { 
   DollarSign,
@@ -261,7 +262,7 @@ export default function Finance() {
   const { data: cashRegisterHistory = [] } = useCashRegisterHistory();
   const { data: openComandasCheck } = useOpenComandasCheck();
   const { data: fixedExpenses = [] } = useFixedExpenses();
-  const { data: dreData } = useDREReport(dreStartDate, dreEndDate);
+  const { data: dreData, isLoading: dreLoading, isFetching: dreFetching } = useDREReport(dreStartDate, dreEndDate);
 
   const hasOpenComandas = openComandasCheck?.hasOpenComandas || false;
   const openComandasList = openComandasCheck?.openComandas || [];
@@ -1035,8 +1036,33 @@ export default function Finance() {
               </CardContent>
             </Card>
 
-            {dreData?.summary ? (
+            {dreLoading ? (
+              <div className="space-y-4" data-testid="dre-skeleton">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <Card key={i} className="border-border/50 bg-card/50">
+                      <CardHeader className="pb-2">
+                        <Skeleton className="h-4 w-24" />
+                      </CardHeader>
+                      <CardContent>
+                        <Skeleton className="h-8 w-32" />
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+                <Card className="border-border/50 bg-card/50">
+                  <CardContent className="pt-6">
+                    <Skeleton className="h-64 w-full" />
+                  </CardContent>
+                </Card>
+              </div>
+            ) : dreData?.summary ? (
               <>
+                {dreFetching && (
+                  <div className="text-xs text-muted-foreground text-right" data-testid="dre-refetching">
+                    Atualizando…
+                  </div>
+                )}
                 <DreExecutiveCards summary={dreData.summary} />
 
                 {dreData.alerts && dreData.alerts.length > 0 && (
