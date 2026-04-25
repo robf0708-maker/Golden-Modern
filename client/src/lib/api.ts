@@ -766,6 +766,16 @@ export function useCommissionPayments(barberId?: string) {
   });
 }
 
+export function useCommissionsByPayment(paymentId: string | null) {
+  return useQuery({
+    queryKey: ["/commissions", "by-payment", paymentId],
+    queryFn: () => fetchAPI(`/commissions?paymentId=${paymentId}`),
+    enabled: !!paymentId,
+    staleTime: Infinity,
+    gcTime: 10 * 60 * 1000,
+  });
+}
+
 export function useBarberPurchases(startDate?: string, endDate?: string, barberId?: string) {
   const params = new URLSearchParams();
   if (startDate) params.append("startDate", startDate);

@@ -2713,7 +2713,7 @@ export async function registerRoutes(
   
   app.get("/api/commissions", requireAuth, async (req, res) => {
     try {
-      const { barberId, startDate, endDate } = req.query;
+      const { barberId, startDate, endDate, paymentId } = req.query;
       const start = startDate ? new Date(startDate as string) : undefined;
       // Ajustar endDate para incluir todo o dia (23:59:59.999)
       let end: Date | undefined;
@@ -2726,7 +2726,8 @@ export async function registerRoutes(
         req.session.barbershopId!,
         barberId as string,
         start,
-        end
+        end,
+        paymentId as string | undefined
       );
       res.json(commissions);
     } catch (error: any) {

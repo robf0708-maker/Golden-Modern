@@ -33,7 +33,7 @@ import {
 import { format, startOfDay, endOfDay } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { toZonedTime, format as formatTz } from "date-fns-tz";
-import { useCommissions, usePayCommission, useBarbers, useBarberPurchases, useCloseCommissions, useCommissionPayments, fetchAPI } from "@/lib/api";
+import { useCommissions, usePayCommission, useBarbers, useBarberPurchases, useCloseCommissions, useCommissionPayments, useCommissionsByPayment, fetchAPI } from "@/lib/api";
 
 const BRAZIL_TIMEZONE = "America/Sao_Paulo";
 
@@ -44,6 +44,87 @@ const formatBrazilDate = (dateString: string, formatStr: string) => {
 };
 
 const getBrazilNow = () => toZonedTime(new Date(), BRAZIL_TIMEZONE);
+
+const labelForCommissionType = (type: string) => {
+  if (type === 'service')       return 'Serviço';
+  if (type === 'product')       return 'Produto';
+  if (type === 'package_use')   return 'Uso de Pacote';
+  if (type === 'fee_deduction') return 'Taxa';
+  if (type === 'deduction')     return 'Compra';
+  return 'Item';
+};
+
+function PaymentCommissionsList({ paymentId }: { paymentId: string }) {
+  const { data: commissions = [], isLoading } = useCommissionsByPayment(paymentId);
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground text-center py-4">Carregando…</p>;
+  }
+  if (commissions.length === 0) {
+    return <p className="text-sm text-muted-foreground text-center py-4">Sem comissões neste fechamento</p>;
+  }
+
+  const positives = commissions
+    .filter((c: any) => parseFloat(c.amount) >= 0)
+    .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const negatives = commissions
+    .filter((c: any) => parseFloat(c.amount) < 0)
+    .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  return (
+    <ScrollArea className="max-h-72">
+      <div className="space-y-2">
+        {positives.map((c: any) => (
+          <div
+            key={c.id}
+            className="flex items-center justify-between p-3 bg-green-500/5 rounded-lg border border-green-500/20"
+          >
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="text-xs">{labelForCommissionType(c.type)}</Badge>
+                <span className="text-sm font-medium">{c.itemName || labelForCommissionType(c.type)}</span>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Calendar className="h-3 w-3" />
+                <span>{formatBrazilDate(c.comandaDate || c.createdAt, "dd/MM/yyyy HH:mm")}</span>
+                {c.clientName && (<><span>•</span><span>{c.clientName}</span></>)}
+              </div>
+            </div>
+            <span className="font-bold text-green-500">R$ {parseFloat(c.amount).toFixed(2)}</span>
+          </div>
+        ))}
+
+        {negatives.length > 0 && (
+          <div className="text-sm font-medium text-orange-500 mt-3 mb-1 flex items-center gap-2">
+            <ShoppingBag className="h-4 w-4" />
+            Descontos
+          </div>
+        )}
+        {negatives.map((c: any) => (
+          <div
+            key={c.id}
+            className="flex items-center justify-between p-3 bg-orange-500/5 rounded-lg border border-orange-500/20"
+          >
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="text-xs border-orange-500/50 text-orange-500">
+                  {labelForCommissionType(c.type)}
+                </Badge>
+                <span className="text-sm font-medium">{c.itemName || labelForCommissionType(c.type)}</span>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Calendar className="h-3 w-3" />
+                <span>{formatBrazilDate(c.comandaDate || c.createdAt, "dd/MM/yyyy HH:mm")}</span>
+                {c.clientName && (<><span>•</span><span>{c.clientName}</span></>)}
+              </div>
+            </div>
+            <span className="font-bold text-orange-500">-R$ {Math.abs(parseFloat(c.amount)).toFixed(2)}</span>
+          </div>
+        ))}
+      </div>
+    </ScrollArea>
+  );
+}
 
 export default function Commissions() {
   const [dateRange, setDateRange] = useState<'today' | '15days' | '30days' | 'custom'>('today');
@@ -65,6 +146,7 @@ export default function Commissions() {
   const [closeEndDate, setCloseEndDate] = useState(() => format(getBrazilNow(), 'yyyy-MM-dd'));
   const [closeCommissionsData, setCloseCommissionsData] = useState<any[]>([]);
   const [closeDeductionsData, setCloseDeductionsData] = useState<any[]>([]);
+  const [closeFeeDeductionsData, setCloseFeeDeductionsData] = useState<any[]>([]);
   const [closePurchaseDeductions, setClosePurchaseDeductions] = useState(0);
   const [closeDataLoaded, setCloseDataLoaded] = useState(false);
   const [expandedBarbers, setExpandedBarbers] = useState<string[]>([]);
@@ -187,6 +269,7 @@ export default function Commissions() {
     setCloseDataLoaded(false);
     setCloseCommissionsData([]);
     setCloseDeductionsData([]);
+    setCloseFeeDeductionsData([]);
     setClosePurchaseDeductions(0);
   };
 
@@ -224,16 +307,23 @@ export default function Commissions() {
         return { ...c, netAmount: parseFloat(c.amount || 0), hasDeduction: false };
       });
       
-      const deductionsClose = allCommissions.filter((c: any) => 
+      const deductionsClose = allCommissions.filter((c: any) =>
         (c.originalType === 'deduction' || c.isBarberPurchase || (c.type === 'deduction' && parseFloat(c.amount || 0) < 0)) && !c.paid
       );
-      
+
+      // fee_deduction: serão amarradas ao fechamento (paid + payment_id) sem alterar total_deductions
+      // (já estão líquidas dentro do netAmount de cada comissão positiva)
+      const feeDeductionsCloseList = allCommissions.filter((c: any) =>
+        (c.type === 'fee_deduction' || c.originalType === 'fee_deduction') && !c.paid
+      );
+
       const purchasesTotal = allPurchases
         .filter((p: any) => p.barberId === closeBarber)
         .reduce((acc: number, p: any) => acc + parseFloat(p.total || 0), 0);
-      
+
       setCloseCommissionsData(positiveClose);
       setCloseDeductionsData(deductionsClose);
+      setCloseFeeDeductionsData(feeDeductionsCloseList);
       setClosePurchaseDeductions(purchasesTotal);
       setCloseDataLoaded(true);
     } catch (error: any) {
@@ -252,7 +342,6 @@ export default function Commissions() {
 
   // Listas separadas: pendentes e pagas (sem incluir deduções nas listas normais)
   const pendingCommissionsList = positiveCommissionsWithNet.filter((c: any) => !c.paid);
-  const paidCommissionsList = positiveCommissionsWithNet.filter((c: any) => c.paid);
   const pendingDeductionsList = deductionCommissions.filter((c: any) => !c.paid);
   const pendingUnsettledBarberPurchases = barberPurchases.filter(
     (p: any) => !isPurchaseCoveredByCommissionClose(p.barberId, p.date)
@@ -337,27 +426,6 @@ export default function Commissions() {
     );
   };
 
-  const getCommissionsForPayment = (payment: any) => {
-    const byPaymentId = paidCommissionsList.filter((c: any) => c.paymentId === payment.id);
-    if (byPaymentId.length > 0) {
-      return byPaymentId;
-    }
-    return paidCommissionsList.filter((c: any) => {
-      if (!c.paidAt || !payment.paidAt) return false;
-      const commPaidAt = toZonedTime(new Date(c.paidAt), BRAZIL_TIMEZONE);
-      const paymentDate = toZonedTime(new Date(payment.paidAt), BRAZIL_TIMEZONE);
-      const periodStart = toZonedTime(new Date(payment.periodStart), BRAZIL_TIMEZONE);
-      const periodEnd = toZonedTime(new Date(payment.periodEnd), BRAZIL_TIMEZONE);
-      periodEnd.setHours(23, 59, 59, 999);
-      const commCreatedAt = toZonedTime(new Date(c.createdAt), BRAZIL_TIMEZONE);
-      
-      return c.barberId === payment.barberId &&
-        commCreatedAt >= periodStart &&
-        commCreatedAt <= periodEnd &&
-        Math.abs(commPaidAt.getTime() - paymentDate.getTime()) < 60000;
-    });
-  };
-
   const handleCloseCommissions = async () => {
     if (closeCommissionsData.length === 0 && closeDeductionsData.length === 0) {
       toast({ title: "Erro", description: "Não há comissões pendentes para fechar", variant: "destructive" });
@@ -369,10 +437,12 @@ export default function Commissions() {
     const deductions = Math.abs(closeDeductionsData.reduce((acc: number, c: any) => acc + parseFloat(c.amount || 0), 0)) + closePurchaseDeductions;
     const net = totalComm - deductions;
 
-    // Incluir tanto comissões positivas quanto deduções para marcar como pagas
+    // Incluir comissões positivas, deduções de produto e fee_deduction (taxas)
+    // — todas precisam receber payment_id para deixar de ficarem órfãs no banco.
     const allCommissionIds = [
       ...closeCommissionsData.map((c: any) => c.id),
-      ...closeDeductionsData.map((c: any) => c.id)
+      ...closeDeductionsData.map((c: any) => c.id),
+      ...closeFeeDeductionsData.map((c: any) => c.id),
     ];
 
     try {
@@ -757,8 +827,7 @@ export default function Commissions() {
                       {commissionPayments.map((payment: any) => {
                         const barber = barbers.find((b: any) => b.id === payment.barberId);
                         const isExpanded = expandedPayments.includes(payment.id);
-                        const paymentCommissions = getCommissionsForPayment(payment);
-                        
+
                         return (
                           <Collapsible key={payment.id} open={isExpanded}>
                             <div className="bg-background/50 rounded-lg border border-border/50 overflow-hidden">
@@ -809,37 +878,9 @@ export default function Commissions() {
                                 <div className="border-t border-border/50 p-4 bg-muted/20">
                                   <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
                                     <CheckCircle className="h-4 w-4 text-green-500" />
-                                    Comissões deste Fechamento ({paymentCommissions.length})
+                                    Comissões deste Fechamento
                                   </h4>
-                                  {paymentCommissions.length === 0 ? (
-                                    <p className="text-sm text-muted-foreground text-center py-4">
-                                      Detalhes das comissões não disponíveis
-                                    </p>
-                                  ) : (
-                                    <ScrollArea className="max-h-48">
-                                      <div className="space-y-2">
-                                        {paymentCommissions.map((c: any) => (
-                                          <div 
-                                            key={c.id}
-                                            className="flex items-center justify-between p-3 bg-green-500/5 rounded-lg border border-green-500/20"
-                                          >
-                                            <div className="flex items-center gap-2">
-                                              <Calendar className="h-4 w-4 text-muted-foreground" />
-                                              <span className="text-sm">
-                                                {formatBrazilDate(c.createdAt, "dd/MM/yyyy HH:mm")}
-                                              </span>
-                                              <Badge variant="outline" className="text-xs">
-                                                {c.type === 'service' ? 'Serviço' : c.type === 'product' ? 'Produto' : c.type === 'deduction' ? 'Desconto' : c.type === 'package_use' ? 'Uso de Pacote' : 'Serviço'}
-                                              </Badge>
-                                            </div>
-                                            <span className={`font-bold ${parseFloat(c.amount) >= 0 ? 'text-green-500' : 'text-orange-500'}`}>
-                                              {parseFloat(c.amount) >= 0 ? 'R$' : '-R$'} {Math.abs(parseFloat(c.amount)).toFixed(2)}
-                                            </span>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    </ScrollArea>
-                                  )}
+                                  {isExpanded && <PaymentCommissionsList paymentId={payment.id} />}
                                 </div>
                               </CollapsibleContent>
                             </div>

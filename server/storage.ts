@@ -227,8 +227,8 @@ export interface IStorage {
   createCashTransaction(transaction: InsertCashTransaction): Promise<CashTransaction>;
   
   // Commissions
-  getCommissions(barbershopId: string, barberId?: string, startDate?: Date, endDate?: Date): Promise<Commission[]>;
-  getCommissionsWithDetails(barbershopId: string, barberId?: string, startDate?: Date, endDate?: Date): Promise<any[]>;
+  getCommissions(barbershopId: string, barberId?: string, startDate?: Date, endDate?: Date, paymentId?: string): Promise<Commission[]>;
+  getCommissionsWithDetails(barbershopId: string, barberId?: string, startDate?: Date, endDate?: Date, paymentId?: string): Promise<any[]>;
   getCommissionsByComanda(comandaId: string): Promise<Commission[]>;
   createCommission(commission: InsertCommission): Promise<Commission>;
   markCommissionPaid(id: string): Promise<void>;
@@ -1368,8 +1368,12 @@ export class DbStorage implements IStorage {
   }
 
   // Commissions
-  async getCommissions(barbershopId: string, barberId?: string, startDate?: Date, endDate?: Date): Promise<Commission[]> {
+  async getCommissions(barbershopId: string, barberId?: string, startDate?: Date, endDate?: Date, paymentId?: string): Promise<Commission[]> {
     const conditions = [eq(schema.commissions.barbershopId, barbershopId)];
+    if (paymentId) {
+      conditions.push(eq(schema.commissions.paymentId, paymentId));
+      return db.select().from(schema.commissions).where(and(...conditions));
+    }
     if (barberId) {
       conditions.push(eq(schema.commissions.barberId, barberId));
     }
@@ -1492,8 +1496,8 @@ export class DbStorage implements IStorage {
   }
 
   // Commissions with details (service/product/package names)
-  async getCommissionsWithDetails(barbershopId: string, barberId?: string, startDate?: Date, endDate?: Date): Promise<any[]> {
-    const commissions = await this.getCommissions(barbershopId, barberId, startDate, endDate);
+  async getCommissionsWithDetails(barbershopId: string, barberId?: string, startDate?: Date, endDate?: Date, paymentId?: string): Promise<any[]> {
+    const commissions = await this.getCommissions(barbershopId, barberId, startDate, endDate, paymentId);
     if (commissions.length === 0) return [];
     
     // Buscar todos os itens de comanda relacionados
