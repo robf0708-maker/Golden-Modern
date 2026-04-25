@@ -72,9 +72,8 @@ function PaymentCommissionsList({ paymentId }: { paymentId: string }) {
     .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   return (
-    <ScrollArea className="max-h-72">
-      <div className="space-y-2">
-        {positives.map((c: any) => (
+    <div className="space-y-2">
+      {positives.map((c: any) => (
           <div
             key={c.id}
             className="flex items-center justify-between p-3 bg-green-500/5 rounded-lg border border-green-500/20"
@@ -121,8 +120,7 @@ function PaymentCommissionsList({ paymentId }: { paymentId: string }) {
             <span className="font-bold text-orange-500">-R$ {Math.abs(parseFloat(c.amount)).toFixed(2)}</span>
           </div>
         ))}
-      </div>
-    </ScrollArea>
+    </div>
   );
 }
 
