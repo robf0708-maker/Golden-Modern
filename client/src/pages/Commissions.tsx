@@ -816,7 +816,7 @@ export default function Commissions() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <ScrollArea className="max-h-[500px]">
+                <div>
                   {commissionPayments.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
                       <History className="h-12 w-12 opacity-50 mb-2" />
@@ -889,7 +889,7 @@ export default function Commissions() {
                       })}
                     </div>
                   )}
-                </ScrollArea>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
