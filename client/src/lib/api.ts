@@ -755,12 +755,14 @@ export function useCloseCommissions() {
   });
 }
 
-export function useCommissionPayments(barberId?: string) {
+export function useCommissionPayments(barberId?: string, startDate?: string, endDate?: string) {
   const params = new URLSearchParams();
   if (barberId) params.append("barberId", barberId);
+  if (startDate) params.append("startDate", startDate);
+  if (endDate) params.append("endDate", endDate);
 
   return useQuery({
-    queryKey: ["/commission-payments", barberId],
+    queryKey: ["/commission-payments", barberId, startDate, endDate],
     queryFn: () => fetchAPI(`/commission-payments?${params.toString()}`),
     refetchInterval: 30000,
   });

@@ -2796,10 +2796,18 @@ export async function registerRoutes(
 
   // Histórico de fechamentos de comissão
   app.get("/api/commission-payments", requireAuth, async (req, res) => {
-    const { barberId } = req.query;
+    const { barberId, startDate, endDate } = req.query;
+    const start = startDate ? new Date(startDate as string) : undefined;
+    let end: Date | undefined;
+    if (endDate) {
+      end = new Date(endDate as string);
+      end.setHours(23, 59, 59, 999);
+    }
     const payments = await storage.getCommissionPayments(
       req.session.barbershopId!,
-      barberId as string
+      barberId as string,
+      start,
+      end
     );
     res.json(payments);
   });

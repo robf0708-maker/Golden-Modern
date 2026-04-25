@@ -163,7 +163,9 @@ export default function Commissions() {
     selectedBarber !== "all" ? selectedBarber : undefined
   );
   const { data: commissionPayments = [] } = useCommissionPayments(
-    selectedBarber !== "all" ? selectedBarber : undefined
+    selectedBarber !== "all" ? selectedBarber : undefined,
+    startDate,
+    endDate
   );
 
   /** Compra já entrou em algum fechamento de comissão (mesmo barbeiro e data dentro do período). */

@@ -235,7 +235,7 @@ export interface IStorage {
   markCommissionsPaidBatch(commissionIds: string[], barbershopId: string, paymentId?: string): Promise<void>;
   
   // Commission Payments (fechamentos)
-  getCommissionPayments(barbershopId: string, barberId?: string): Promise<CommissionPayment[]>;
+  getCommissionPayments(barbershopId: string, barberId?: string, startDate?: Date, endDate?: Date): Promise<CommissionPayment[]>;
   createCommissionPayment(payment: InsertCommissionPayment): Promise<CommissionPayment>;
   deleteCommissionPayment(id: string): Promise<void>;
   updateCommissionPayment(id: string, data: Partial<InsertCommissionPayment>): Promise<void>;
@@ -1415,10 +1415,16 @@ export class DbStorage implements IStorage {
   }
 
   // Commission Payments (fechamentos)
-  async getCommissionPayments(barbershopId: string, barberId?: string): Promise<CommissionPayment[]> {
+  async getCommissionPayments(barbershopId: string, barberId?: string, startDate?: Date, endDate?: Date): Promise<CommissionPayment[]> {
     const conditions = [eq(schema.commissionPayments.barbershopId, barbershopId)];
     if (barberId) {
       conditions.push(eq(schema.commissionPayments.barberId, barberId));
+    }
+    if (startDate) {
+      conditions.push(gte(schema.commissionPayments.paidAt, startDate));
+    }
+    if (endDate) {
+      conditions.push(lte(schema.commissionPayments.paidAt, endDate));
     }
     return db.select().from(schema.commissionPayments).where(and(...conditions)).orderBy(desc(schema.commissionPayments.paidAt));
   }
